@@ -16,9 +16,18 @@ describe("review workspace UI contract", () => {
     const appSource = await readFile("src/app/App.tsx", "utf8");
     const indexHtml = await readFile("index.html", "utf8");
     const packageJson = await readFile("package.json", "utf8");
+    const styles = await readFile("src/app/styles.css", "utf8");
 
     assert.match(appSource, /Dorey/);
     assert.match(appSource, /Doc Review/);
+    assert.match(appSource, /Powered by JO/);
+    assert.match(appSource, /aria-label="播放 Dorey 发音"/);
+    assert.match(appSource, /dorey-pronunciation\.m4a\?url/);
+    assert.match(appSource, /new Audio\(doreyPronunciationUrl\)/);
+    assert.match(styles, /\.sidebar-heading\s*{[^}]*border-bottom:\s*1px solid #edf1f5;[^}]*display:\s*grid;/s);
+    assert.match(styles, /\.sidebar-heading h1\s*{[^}]*font-size:\s*28px;/s);
+    assert.match(styles, /\.sidebar-brand-row\s*{[^}]*justify-content:\s*space-between;/s);
+    assert.match(styles, /\.pronunciation-button\s*{[^}]*height:\s*18px;[^}]*width:\s*18px;/s);
     assert.match(indexHtml, /<title>Dorey<\/title>/);
     assert.match(packageJson, /"name": "dorey"/);
     assert.match(appSource, /评论队列/);

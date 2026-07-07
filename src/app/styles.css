@@ -69,10 +69,11 @@ button:disabled {
 }
 
 .sidebar-heading {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  margin-bottom: 24px;
+  border-bottom: 1px solid #edf1f5;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 22px;
+  padding-bottom: 14px;
 }
 
 .sidebar-heading h1,
@@ -82,8 +83,37 @@ button:disabled {
 }
 
 .sidebar-heading h1 {
-  font-size: 18px;
-  line-height: 1.2;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.sidebar-brand-row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.pronunciation-button {
+  align-items: center;
+  background: #f3f6fa;
+  border: 1px solid #d8dee7;
+  border-radius: 999px;
+  color: #536170;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  padding: 0;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+  width: 18px;
+}
+
+.pronunciation-button:hover {
+  background: #eef4ff;
+  border-color: #c7d8f8;
+  color: #2f6fed;
 }
 
 .sidebar-heading p,
@@ -92,6 +122,10 @@ button:disabled {
   color: #657282;
   font-size: 12px;
   margin: 3px 0 0;
+}
+
+.sidebar-heading p {
+  margin: 0;
 }
 
 .artifact-list {
@@ -183,6 +217,16 @@ button:disabled {
 
 .artifact-warning {
   color: #9b1c1c !important;
+}
+
+.sidebar-signature {
+  border-top: 1px solid #edf1f5;
+  color: #8793a0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 22px 2px 0;
+  padding-top: 14px;
 }
 
 .reader-column {

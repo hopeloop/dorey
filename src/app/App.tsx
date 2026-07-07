@@ -1,12 +1,12 @@
 import {
   Check,
-  FileText,
   MessageSquarePlus,
   Pencil,
   RotateCcw,
   Send,
   Sparkles,
   Trash2,
+  Volume2,
   X,
 } from "lucide-react";
 import {
@@ -53,6 +53,7 @@ import { TraexAgentAdapter } from "../review/traex-agent-adapter.js";
 import { DiffView } from "./components/DiffView";
 import { HtmlDocument } from "./components/HtmlDocument";
 import { MarkdownDocument } from "./components/MarkdownDocument";
+import doreyPronunciationUrl from "./assets/dorey-pronunciation.m4a?url";
 import {
   getReviewWorkspaceBootstrap,
   type ReviewWorkspaceBootstrap,
@@ -990,15 +991,29 @@ export function App() {
     setViewerMode("current");
   }
 
+  function playDoreyPronunciation() {
+    const audio = new Audio(doreyPronunciationUrl);
+    audio.volume = 0.72;
+    void audio.play().catch(() => undefined);
+  }
+
   return (
     <main className="app-shell">
       <aside className="artifact-sidebar">
         <div className="sidebar-heading">
-          <FileText size={20} aria-hidden="true" />
-          <div>
+          <div className="sidebar-brand-row">
             <h1>Dorey</h1>
-            <p>Doc Review · AI coding artifacts 本地审阅闭环</p>
+            <button
+              aria-label="播放 Dorey 发音"
+              className="pronunciation-button"
+              onClick={playDoreyPronunciation}
+              title="播放 Dorey 发音"
+              type="button"
+            >
+              <Volume2 size={11} aria-hidden="true" />
+            </button>
           </div>
+          <p>Doc Review · 本地审阅闭环</p>
         </div>
 
         {workflowRuns.length > 0 ? (
@@ -1074,6 +1089,7 @@ export function App() {
             </div>
           ))}
         </div>
+        <p className="sidebar-signature">Powered by JO</p>
       </aside>
 
       <section className="reader-column">
