@@ -1,0 +1,49 @@
+{
+  "name": "dorey",
+  "version": "0.1.0",
+  "description": "a local doc review loop for AI coding artifacts",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "dorey": "./dist/src/server/revision-agent-poll-cli.js"
+  },
+  "files": [
+    "dist",
+    "index.html",
+    "README.md",
+    "samples",
+    "scripts",
+    "src",
+    "tsconfig.app.json",
+    "tsconfig.json",
+    "vite.config.ts"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "dev": "vite --host 127.0.0.1",
+    "build": "npm run clean && npm run build:lib && npm run build:web",
+    "build:lib": "tsc -p tsconfig.json && chmod +x dist/src/server/revision-agent-poll-cli.js",
+    "build:web": "vite build",
+    "test": "npm run clean && npm run build:lib && node --test \"dist/tests/**/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.app.json --noEmit",
+    "agent:poll": "npm run build:lib && node dist/src/server/revision-agent-poll-cli.js poll",
+    "generate:demo": "npm run build:lib && node dist/scripts/generate-demo-task.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@plantuml/core": "^1.2026.6",
+    "@vitejs/plugin-react": "^6.0.3",
+    "github-markdown-css": "^5.9.0",
+    "lucide-react": "^1.23.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^8.1.3"
+  }
+}
