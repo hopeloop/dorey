@@ -47,7 +47,7 @@ import type {
 } from "../server/workflow-run-loader.js";
 import { CodexCliAgentAdapter } from "../review/codex-cli-agent-adapter.js";
 import { CodexDesktopAgentAdapter } from "../review/codex-desktop-agent-adapter.js";
-import { createLineDiff, type LineDiffEntry } from "../review/diff.js";
+import { createRenderedDiff, type RenderedDiffEntry } from "../review/diff.js";
 import { getPopoverPosition } from "../review/popover-position.js";
 import { TraexAgentAdapter } from "../review/traex-agent-adapter.js";
 import { DiffView } from "./components/DiffView";
@@ -88,7 +88,7 @@ type CommentDraft = {
 type AgentResult = {
   sourceMarkdown: string;
   response: BatchRevisionResponse;
-  diff: LineDiffEntry[];
+  diff: RenderedDiffEntry[];
   runId: string;
   contextSnapshot: ContextSnapshot;
   revisionSource: "agent" | "manual";
@@ -727,7 +727,7 @@ export function App() {
       setAgentResult({
         sourceMarkdown,
         response,
-        diff: createLineDiff(sourceMarkdown, response.revisedMarkdown),
+        diff: createRenderedDiff(sourceMarkdown, response.revisedMarkdown),
         runId: reviewRun.id,
         contextSnapshot: submission.contextSnapshot,
         revisionSource: "manual",
@@ -781,7 +781,7 @@ export function App() {
     setAgentResult({
       sourceMarkdown: pending.sourceMarkdown,
       response,
-      diff: createLineDiff(pending.sourceMarkdown, response.revisedMarkdown),
+      diff: createRenderedDiff(pending.sourceMarkdown, response.revisedMarkdown),
       runId: reviewRun.id,
       contextSnapshot: pending.contextSnapshot,
       revisionSource: "agent",

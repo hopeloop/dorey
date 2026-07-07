@@ -1101,57 +1101,177 @@ button:disabled {
 
 .diff-view {
   background: #ffffff;
-  border: 1px solid #d8dee7;
+  border: 1px solid #dde5ef;
   border-radius: 8px;
-  box-shadow: 0 12px 30px rgba(31, 45, 61, 0.08);
+  box-shadow: 0 12px 30px rgba(31, 45, 61, 0.06);
+  display: grid;
+  gap: 12px;
   margin: 0 auto;
   max-width: 1100px;
   overflow: auto;
-  padding: 12px 0;
+  padding: clamp(18px, 3vw, 30px);
 }
 
-.diff-row {
+.rendered-diff-block {
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  padding: 8px 10px;
+}
+
+.rendered-diff-inline-block {
+  padding: 4px 10px;
+}
+
+.rendered-diff-inline-block :where(h1, h2, h3, h4, h5, h6, p, blockquote) {
+  margin-bottom: 0;
+  margin-top: 0;
+}
+
+.rendered-diff-list-item {
+  align-items: baseline;
   display: grid;
-  grid-template-columns: 54px 54px 28px minmax(0, 1fr);
-  min-height: 26px;
+  gap: 10px;
+  grid-template-columns: 22px minmax(0, 1fr);
 }
 
-.diff-row code {
-  color: #17202a;
-  font-family:
-    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  overflow-wrap: anywhere;
-  padding: 3px 12px 3px 0;
-  white-space: pre-wrap;
-}
-
-.diff-gutter,
-.diff-marker {
+.rendered-diff-list-marker {
   color: #657282;
-  font-family:
-    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  padding-top: 3px;
   text-align: right;
 }
 
-.diff-marker {
-  text-align: center;
+.rendered-diff-block .review-markdown {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  margin: 0;
+  max-width: none;
+  min-height: 0;
+  padding: 0;
 }
 
-.diff-row-added {
-  background: #eaf6ef;
+.rendered-diff-block .review-markdown > :first-child {
+  margin-top: 0;
 }
 
-.diff-row-added .diff-marker {
-  color: #17623b;
+.rendered-diff-block .review-markdown > :last-child {
+  margin-bottom: 0;
 }
 
-.diff-row-removed {
-  background: #ffecec;
+.rendered-diff-block-added {
+  background: #e8f7ef;
+  border-left-color: #3aa668;
+  color: #123f2a;
 }
 
-.diff-row-removed .diff-marker {
-  color: #9b1c1c;
+.rendered-diff-line-added {
+  background: #e8f7ef;
+}
+
+.rendered-diff-block-removed {
+  background: #fde8e8;
+  border-left-color: #cf5d5d;
+  color: #7f1d1d;
+}
+
+.rendered-diff-line-removed {
+  background: #fde8e8;
+}
+
+.rendered-diff-block-removed,
+.rendered-diff-line-removed {
+  text-decoration: line-through;
+  text-decoration-color: rgba(127, 29, 29, 0.68);
+  text-decoration-thickness: 1.5px;
+  text-decoration-skip-ink: none;
+}
+
+.rendered-diff-block-removed :where(h1, h2, h3, h4, h5, h6, p, li, td, th, code),
+.rendered-diff-line-removed :where(td, th) {
+  text-decoration: inherit;
+  text-decoration-color: inherit;
+  text-decoration-thickness: inherit;
+}
+
+.rendered-diff-inline {
+  border-radius: 4px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 1px 3px;
+}
+
+.rendered-diff-inline-added {
+  background: #c8eed8;
+  color: #0f5132;
+}
+
+.rendered-diff-inline-removed {
+  background: #f8caca;
+  color: #842029;
+  text-decoration: line-through;
+  text-decoration-color: rgba(132, 32, 41, 0.72);
+  text-decoration-thickness: 1.5px;
+  text-decoration-skip-ink: none;
+}
+
+.rendered-diff-code {
+  background: #f6f8fa;
+  border: 1px solid #d8dee7;
+  border-radius: 6px;
+  color: #17202a;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 0;
+}
+
+.rendered-diff-code code {
+  display: block;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.rendered-diff-code-line {
+  display: block;
+  min-height: 20px;
+  padding: 0 14px;
+  white-space: pre;
+}
+
+.rendered-diff-code-line-changed {
+  background: transparent;
+}
+
+.rendered-diff-table-block table,
+.rendered-diff-table-snapshot table {
+  background: #ffffff;
+  border-collapse: collapse;
+  display: table;
+  margin: 0;
+  width: 100%;
+}
+
+.rendered-diff-table-block th,
+.rendered-diff-table-block td,
+.rendered-diff-table-snapshot th,
+.rendered-diff-table-snapshot td {
+  border: 1px solid #d8dee7;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.rendered-diff-table-pair {
+  display: grid;
+  gap: 10px;
+}
+
+.rendered-diff-table-snapshot {
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  padding: 8px;
 }
 
 .empty-app {
