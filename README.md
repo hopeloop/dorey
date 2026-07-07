@@ -2,15 +2,15 @@
 
 Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档审阅闭环工具。
 
-它的目标很简单：把 Markdown / HTML 技术文档放进一个本地 Web 工作台里，让人可以像评审文档一样选中文本、加评论、批量提交给当前 AI Agent 会话处理，也可以直接编辑 Markdown 源码，再把修订结果回写到页面和本地 review 目录。
+它的目标很简单：把 Markdown 技术文档放进一个本地 Web 工作台里，让人可以像评审文档一样选中文本、加评论、批量提交给当前 AI Agent 会话处理，也可以直接编辑 Markdown 源码，再把修订结果回写到页面和本地 review 目录。
 
 ## 核心能力
 
-- 本地 Web UI：渲染 Markdown / HTML 产物，支持选中文本、添加评论、编辑评论、删除评论、批量提交，以及直接编辑 Markdown 源码。
+- 本地 Web UI：渲染 Markdown 产物，支持选中文本、添加评论、编辑评论、删除评论、批量提交，以及直接编辑 Markdown 源码。
 - 原会话提交闭环：`Submit All` 不启动新的 `resume` 子进程，而是把 payload 写入本地队列，由启动 Dorey 的 Codex / TraeX 原会话通过 `dorey poll` 拉取。
 - 多 Agent 入口：支持 Codex Desktop 原对话、Codex CLI 会话、TraeX CLI 会话。
 - 会话上下文：每个文档至少关联一个 review session，submit payload 会携带任务目标、当前阶段、上下文摘要、关联会话和已接受历史。
-- 修订结果视图：展示摘要、逐条处理结果、修订 Markdown、行级 diff，并支持 `接受` 把修订设为当前版本。
+- 修订结果视图：展示摘要、逐条处理结果、修订 Markdown、渲染态 diff，并支持 `接受` 把修订设为当前版本。
 - 单文档入口：CLI 必须显式传入 `--review-file <file>` 或 `--demo`；不会从当前目录自动扫描 `.local` 或 workflow runs 后直接启动。
 - PlantUML 渲染：Markdown 中的 `plantuml` fenced code block 会在编辑器里渲染为 inline SVG，并保留源码展开能力。
 
@@ -22,7 +22,7 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 dorey --review-file path/to/design.md
 ```
 
-当前版本只支持单文档 review。`--review-file` 接受 Markdown / HTML 文件，Dorey 会为这个文件生成一次临时 workflow run，左侧文档栏只围绕这个 review target 展示。
+当前版本只支持单文档 review。`--review-file` 接受 Markdown 文件，Dorey 会为这个文件生成一次临时 workflow run，左侧文档栏只围绕这个 review target 展示。
 
 如果只是想打开 Dorey 自带的产品 demo：
 
@@ -64,7 +64,7 @@ http://127.0.0.1:5173/
 ## 基本使用流程
 
 1. 使用 `dorey --review-file <file>` 或 `dorey --demo` 打开 Dorey Web UI。
-2. 在左侧或中间文档区选择一个 Markdown / HTML 产物。
+2. 在左侧或中间文档区选择一个 Markdown 产物。
 3. 在渲染后的文档中选中文本。
 4. 点击 `添加评论`。
 5. 输入评论内容，选择评论类型，点击 `添加`。
@@ -97,7 +97,7 @@ Browser Submit All
 ## CLI 命令
 
 ```bash
-dorey --review-file README.md # review 单个 Markdown / HTML 文档
+dorey --review-file README.md # review 单个 Markdown 文档
 dorey --demo                  # 打开 Dorey 自带产品 demo
 dorey poll                    # 在原 agent session 中等待 submit payload
 dorey status                  # 查看 server health、workspace root、launcher context
@@ -140,7 +140,7 @@ dorey poll --base-url http://127.0.0.1:5175 --target traex-cli:<session-id>
 
 Dorey 的 Web server 仍然通过 workflow run contract 读取文档，但 CLI 不再从当前工作目录自动发现 workflow root。启动时只有两个来源：
 
-- `dorey --review-file <file>`：把指定的单个 Markdown / HTML 文件复制到临时 workflow run。
+- `dorey --review-file <file>`：把指定的单个 Markdown 文件复制到临时 workflow run。
 - `dorey --demo`：在临时目录生成 Dorey 内置 demo workflow run。
 
 临时单文档 run 的结构仍然是：
@@ -164,7 +164,6 @@ review
 默认用户可见文件：
 
 - Markdown 文件
-- HTML 文件
 
 默认隐藏：
 
@@ -215,8 +214,7 @@ runRoot/review/<artifactId>/
 src/app/
   App.tsx                         # 三栏 review workspace
   components/MarkdownDocument.tsx # react-markdown + remark-gfm 渲染
-  components/HtmlDocument.tsx     # HTML artifact 只读展示
-  components/DiffView.tsx         # 简单行级 diff 视图
+  components/DiffView.tsx         # 渲染态 Markdown diff 视图
   components/PlantUmlDiagram.tsx  # PlantUML inline SVG 渲染
   selection.ts                    # 单 block DOM selection anchor
   session-state.ts                # review session、snapshot、run history
@@ -232,7 +230,7 @@ src/review/
   codex-agent-adapter.ts          # 浏览器侧 Codex HTTP adapter
   codex-desktop-agent-adapter.ts  # 浏览器侧 Codex Desktop adapter
   traex-agent-adapter.ts          # 浏览器侧 TraeX HTTP adapter
-  diff.ts                         # 行 diff helper
+  diff.ts                         # rendered/inline diff helper
   popover-position.ts             # 评论弹窗定位
 
 src/server/
@@ -260,14 +258,13 @@ tests/
 - React + Vite + TypeScript 本地 Web app。
 - Markdown 渲染：`react-markdown`、`remark-gfm`、`github-markdown-css`。
 - PlantUML fenced code block 渲染为 inline SVG。
-- HTML artifact 只读展示。
 - 稳定 `data-block-id`，覆盖 heading、paragraph、list item、blockquote、code block、table、table row。
 - 单 block 文本选择，记录 quote、blockId、startOffset、endOffset、prefix、suffix。
 - 评论队列：新增、编辑、删除、清空、分类、批量提交。
 - Codex Desktop / Codex CLI / TraeX CLI queued submit flow。
 - 原会话 poll/reply 闭环，不启动隐藏 `resume` 子进程。
 - Session context editor：任务目标、阶段、上下文摘要、启动上下文、accepted history。
-- Batch revision result：摘要、逐条处理、修订 Markdown、行级 diff。
+- Batch revision result：摘要、逐条处理、修订 Markdown、渲染态 diff。
 - Markdown source editor：直接编辑当前 Markdown 源码，保存为 manual revision 并复用 diff / accept / review 写回链路。
 - Accept：更新当前 artifact，清空评论队列，记录 accepted run。
 - 单文档启动：显式 `--review-file` materialize 一次临时 workflow run；`--demo` 只打开内置 demo，不扫描调用目录。
@@ -280,25 +277,3 @@ tests/
 - 外部 LLM API 直连。
 - 复杂 patch merge。
 - 完整 workflow state machine 编排。
-
-## 生成本地 Demo Workflow Artifacts
-
-```bash
-npm run generate:demo
-```
-
-输出到本地忽略目录：
-
-```text
-generated/demo-task/
-  01-requirement-orientation.md
-  02-system-modeling.md
-  03-technical-design.md
-  04-coding-plan.md
-  05-verification.md
-  06-debug.md
-  07-asset-feedback.md
-  trace.json
-```
-
-`trace.json` 会记录每个阶段使用了哪些上下文文件、历史产物和人工备注。
