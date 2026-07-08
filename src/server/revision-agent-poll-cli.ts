@@ -398,7 +398,7 @@ export async function runDoreyCli(
   return await runRevisionAgentPollLoop(options.pollOptions);
 }
 
-async function runRevisionAgentPollLoop(
+export async function runRevisionAgentPollLoop(
   options: RevisionAgentPollOptions,
 ): Promise<number> {
   while (true) {
@@ -412,7 +412,12 @@ async function runRevisionAgentPollLoop(
 
     if (result.status === "feedback") {
       process.stdout.write(formatRevisionAgentPollFeedback(result));
-      return 0;
+
+      if (options.once) {
+        return 0;
+      }
+
+      continue;
     }
 
     if (options.once) {

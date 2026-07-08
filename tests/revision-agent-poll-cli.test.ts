@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import type { RevisionPollResult } from "../src/server/revision-poll-broker.js";
 import {
   buildDoreyServerEnv,
   buildDoreyHelpText,
@@ -20,7 +21,46 @@ import {
   prepareDoreyLaunchWorkspace,
   parseRevisionAgentPollArgs,
   resolveRevisionPollTargetFromEnv,
+  runRevisionAgentPollLoop,
 } from "../src/server/revision-agent-poll-cli.js";
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    headers: {
+      "content-type": "application/json",
+    },
+    status: 200,
+  });
+}
+
+function pollFeedback(
+  requestId: string,
+): Extract<RevisionPollResult, { status: "feedback" }> {
+  return {
+    agentPollCommand:
+      "dorey poll --base-url 'http://127.0.0.1:5175' --target 'traex-cli:session-1'",
+    nextStep: "处理 request，然后 POST reply。",
+    payloadPath: `/tmp/${requestId}/payload.json`,
+    replyCommand: `curl -sS -X POST 'http://127.0.0.1:5175/api/agent/submissions/${requestId}/reply' -H 'Content-Type: application/json' --data-binary @response.json`,
+    request: {
+      artifact: {
+        id: "doc-1",
+        markdown: "# Doc\n",
+        stage: "technical_design",
+        title: "Doc",
+      },
+      comments: [],
+    },
+    requestId,
+    status: "feedback",
+    target: {
+      key: "traex-cli:session-1",
+      label: "TraeX CLI（原会话）",
+      provider: "traex",
+      transport: "traex_cli",
+    },
+  };
+}
 
 describe("revision agent poll CLI", () => {
   it("prints help for the bare dorey command instead of launching", () => {
@@ -727,6 +767,88 @@ describe("revision agent poll CLI", () => {
     assert.equal(parsed.payloadPath, "/tmp/payload.json");
     assert.equal(parsed.replyCommand.includes("/reply"), true);
     assert.equal(parsed.nextAction, "revise_markdown_and_post_batch_response");
+  });
+
+  it("keeps default poll alive after feedback so later submits are received", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalStdoutWrite = process.stdout.write;
+    let fetchCount = 0;
+    let output = "";
+    let thirdFetchCalled: () => void = () => {};
+    const thirdFetch = new Promise<void>((resolve) => {
+      thirdFetchCalled = resolve;
+    });
+    const pendingFetch = new Promise<Response>(() => {});
+
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+
+      if (fetchCount === 1 || fetchCount === 2) {
+        return jsonResponse(pollFeedback(`submit-${fetchCount}`));
+      }
+
+      thirdFetchCalled();
+      return await pendingFetch;
+    }) as typeof fetch;
+    process.stdout.write = ((chunk: unknown) => {
+      output += String(chunk);
+
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      void runRevisionAgentPollLoop({
+        baseUrl: "http://127.0.0.1:5175",
+        intervalMs: 1,
+        once: false,
+        targetKey: "traex-cli:session-1",
+        timeoutMs: 1,
+      });
+
+      await thirdFetch;
+
+      assert.equal(fetchCount, 3);
+      assert.match(output, /"requestId": "submit-1"/);
+      assert.match(output, /"requestId": "submit-2"/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.stdout.write = originalStdoutWrite;
+    }
+  });
+
+  it("exits after the first feedback when --once is set", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalStdoutWrite = process.stdout.write;
+    let fetchCount = 0;
+    let output = "";
+
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+
+      return jsonResponse(pollFeedback("submit-once"));
+    }) as typeof fetch;
+    process.stdout.write = ((chunk: unknown) => {
+      output += String(chunk);
+
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      const exitCode = await runRevisionAgentPollLoop({
+        baseUrl: "http://127.0.0.1:5175",
+        intervalMs: 1,
+        once: true,
+        targetKey: "traex-cli:session-1",
+        timeoutMs: 1,
+      });
+
+      assert.equal(exitCode, 0);
+      assert.equal(fetchCount, 1);
+      assert.match(output, /"requestId": "submit-once"/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.stdout.write = originalStdoutWrite;
+    }
   });
 
   it("builds the recommended command shown in the UI", () => {
