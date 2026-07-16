@@ -237,6 +237,50 @@ describe("workflow run loader", () => {
     assert.match(documentDraft.displayMarkdown, /# 发布文档草稿/);
   });
 
+  it("discovers folder-review Markdown recursively and titles documents from H1", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "dorey-folder-run-"));
+    const runRoot = path.join(tempRoot, "folder-run");
+    await mkdir(path.join(runRoot, "documents", "notes"), { recursive: true });
+    await writeFile(
+      path.join(runRoot, "workflow-run.json"),
+      JSON.stringify({
+        review: { root: "review" },
+        runId: "folder-run",
+        source: { mode: "folder" },
+        taskTitle: "文档目录",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(runRoot, "documents", "蒸馏偏见.md"),
+      "# 蒸馏偏见\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(runRoot, "documents", "notes", "说明.markdown"),
+      "```md\n# 不是标题\n```\n\n真正标题\n===\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(runRoot, "documents", "notes", "ignored.html"),
+      "<h1>Ignored</h1>",
+      "utf8",
+    );
+
+    const [run] = await listWorkflowRuns({ root: tempRoot });
+    assert.ok(run);
+    assert.equal(run.sourceMode, "folder");
+    assert.deepEqual(
+      run.artifacts.map((artifact) => artifact.relativePath),
+      ["documents/notes/说明.markdown", "documents/蒸馏偏见.md"],
+    );
+    assert.deepEqual(
+      new Set(run.artifacts.map((artifact) => artifact.title)),
+      new Set(["真正标题", "蒸馏偏见"]),
+    );
+    assert.equal(new Set(run.artifacts.map((artifact) => artifact.id)).size, 2);
+  });
+
   it("writes submit trace and accept result under review without mutating source artifacts", async () => {
     const tempRoot = await mkdtemp(path.join(tmpdir(), "workflow-runs-"));
     const fixture = await createWorkflowRunFixture(tempRoot, "demo-run");

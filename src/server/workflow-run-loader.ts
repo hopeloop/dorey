@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import {
   mkdir,
@@ -16,6 +16,7 @@ import type {
   QueuedComment,
   RevisionSource,
 } from "../contracts/index.js";
+import { extractMarkdownH1 } from "../shared/markdown-document.js";
 
 export type WorkflowArtifactGroup =
   | "scratch"
@@ -59,6 +60,9 @@ export type WorkflowRunManifest = {
     root?: string;
     writeRoot?: string;
   };
+  source?: {
+    mode?: "single-file" | "folder" | "demo";
+  };
 };
 
 export type WorkflowRunSummary = {
@@ -69,6 +73,7 @@ export type WorkflowRunSummary = {
   effectiveRunRoot: string;
   runRootHint?: string;
   reviewRoot: string;
+  sourceMode?: "single-file" | "folder" | "demo";
   artifacts: NormalizedWorkflowArtifact[];
 };
 
@@ -90,6 +95,17 @@ export type ReadWorkflowRunArtifactInput = {
   artifactId: string;
   root: string;
   runKey: string;
+};
+
+export type ReadWorkflowRunAssetInput = {
+  relativePath: string;
+  root: string;
+  runKey: string;
+};
+
+export type WorkflowRunAssetContent = {
+  body: Buffer;
+  contentType: string;
 };
 
 export type WriteWorkflowRevisionTraceInput = {
@@ -132,6 +148,18 @@ type ArtifactMapping = Omit<
   manifestKey: string;
   assetKey?: string;
 };
+
+const imageContentTypes = new Map<string, string>([
+  [".avif", "image/avif"],
+  [".bmp", "image/bmp"],
+  [".gif", "image/gif"],
+  [".ico", "image/x-icon"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".svg", "image/svg+xml"],
+  [".webp", "image/webp"],
+]);
 
 const artifactMappings: ArtifactMapping[] = [
   {
@@ -285,7 +313,11 @@ export function normalizeWorkflowRunManifest(
 
       return [artifact];
     }),
-    ...discoverUserFacingDirectoryArtifacts(effectiveRunRoot, manifestRelativePaths),
+    ...discoverUserFacingDirectoryArtifacts(
+      effectiveRunRoot,
+      manifestRelativePaths,
+      parsed.source?.mode,
+    ),
   ].sort((left, right) => left.displayOrder - right.displayOrder);
 }
 
@@ -313,8 +345,21 @@ function collectManifestRelativePaths(artifactsMap: Record<string, unknown>): Se
 function discoverUserFacingDirectoryArtifacts(
   effectiveRunRoot: string,
   manifestRelativePaths: Set<string>,
+  sourceMode?: "single-file" | "folder" | "demo",
 ): NormalizedWorkflowArtifact[] {
   return [
+    ...discoverArtifactsInDirectory({
+      baseOrder: 31,
+      dirName: "documents",
+      effectiveRunRoot,
+      group: "document",
+      includeFileName:
+        sourceMode === "folder" ? (fileName) => isMarkdownDocument(fileName) : undefined,
+      manifestRelativePaths,
+      recursive: true,
+      stage: "document",
+      titleFromContent: true,
+    }),
     ...discoverArtifactsInDirectory({
       baseOrder: 41,
       dirName: "document",
@@ -342,7 +387,9 @@ function discoverArtifactsInDirectory({
   group,
   includeFileName = () => true,
   manifestRelativePaths,
+  recursive = false,
   stage,
+  titleFromContent = false,
 }: {
   baseOrder: number;
   dirName: string;
@@ -350,14 +397,20 @@ function discoverArtifactsInDirectory({
   group: WorkflowArtifactGroup;
   includeFileName?: (fileName: string) => boolean;
   manifestRelativePaths: Set<string>;
+  recursive?: boolean;
   stage: string;
+  titleFromContent?: boolean;
 }): NormalizedWorkflowArtifact[] {
   const dirPath = path.join(effectiveRunRoot, dirName);
-  const entries = readDirectorySyncSafe(dirPath)
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .filter(includeFileName)
-    .sort();
+  const entries = recursive
+    ? discoverFilesRecursively(dirPath).filter((relativePath) =>
+        includeFileName(path.posix.basename(relativePath)),
+      )
+    : readDirectorySyncSafe(dirPath)
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .filter(includeFileName)
+        .sort();
 
   return entries
     .flatMap((mapping) => {
@@ -371,12 +424,17 @@ function discoverArtifactsInDirectory({
       const artifact: NormalizedWorkflowArtifact = {
         displayOrder: baseOrder,
         group,
-        id: createDiscoveredArtifactId(relativePath),
+        id: createDiscoveredArtifactId(relativePath, recursive),
         kind,
         relativePath,
         reviewable: kind === "markdown" || kind === "html",
         stage,
-        title: titleFromRelativePath(relativePath),
+        title: titleFromContent
+          ? titleFromDocumentFile(
+              resolveWorkflowRelativePath(effectiveRunRoot, relativePath),
+              relativePath,
+            )
+          : titleFromRelativePath(relativePath),
       };
 
       return [artifact];
@@ -389,6 +447,32 @@ function discoverArtifactsInDirectory({
       ...artifact,
       displayOrder: baseOrder + index / 100,
     }));
+}
+
+function discoverFilesRecursively(root: string): string[] {
+  const files: string[] = [];
+
+  function walk(currentDir: string, relativeDir: string): void {
+    for (const entry of readDirectorySyncSafe(currentDir)) {
+      if (entry.name === ".git" || entry.name === "node_modules") {
+        continue;
+      }
+
+      const entryPath = path.join(currentDir, entry.name);
+      const relativePath = relativeDir
+        ? path.posix.join(relativeDir, entry.name)
+        : entry.name;
+
+      if (entry.isDirectory()) {
+        walk(entryPath, relativePath);
+      } else if (entry.isFile()) {
+        files.push(relativePath);
+      }
+    }
+  }
+
+  walk(root, "");
+  return files.sort();
 }
 
 export function resolveWorkflowRelativePath(
@@ -431,6 +515,7 @@ export async function listWorkflowRuns({
         runId: manifest.runId,
         runKey: createRunKey(resolvedRoot, manifestPath),
         runRootHint: manifest.runRoot,
+        sourceMode: manifest.source?.mode,
         taskTitle: manifest.taskTitle,
       } satisfies WorkflowRunSummary;
     }),
@@ -463,6 +548,32 @@ export async function readWorkflowRunArtifact({
     missing,
     relativePath: artifact.relativePath,
     run,
+  };
+}
+
+export async function readWorkflowRunAsset({
+  relativePath,
+  root,
+  runKey,
+}: ReadWorkflowRunAssetInput): Promise<WorkflowRunAssetContent> {
+  const run = await findRunByKey(root, runKey);
+  const extension = path.posix.extname(relativePath).toLowerCase();
+  const contentType = imageContentTypes.get(extension);
+
+  if (!contentType) {
+    throw new Error(`Unsupported workflow image type: ${relativePath}`);
+  }
+
+  const assetPath = resolveWorkflowRelativePath(run.effectiveRunRoot, relativePath);
+  const assetStat = await stat(assetPath).catch(() => undefined);
+
+  if (!assetStat?.isFile()) {
+    throw new Error(`Workflow image not found: ${relativePath}`);
+  }
+
+  return {
+    body: await readFile(assetPath),
+    contentType,
   };
 }
 
@@ -764,12 +875,16 @@ function inferUserFacingDocumentKind(
   return undefined;
 }
 
-function createDiscoveredArtifactId(relativePath: string): string {
-  return `doc-${relativePath
+function createDiscoveredArtifactId(relativePath: string, includeHash = false): string {
+  const slug = relativePath
     .replace(/\.[^.]+$/, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")}`;
+    .replace(/^-+|-+$/g, "") || "document";
+
+  return includeHash
+    ? `doc-${slug}-${createHash("sha256").update(relativePath).digest("hex").slice(0, 10)}`
+    : `doc-${slug}`;
 }
 
 function titleFromRelativePath(relativePath: string): string {
@@ -780,6 +895,23 @@ function titleFromRelativePath(relativePath: string): string {
     .split("/")
     .map((segment) => segment.replace(/[-_]+/g, " "))
     .join(" / ");
+}
+
+function titleFromDocumentFile(filePath: string, relativePath: string): string {
+  if (!isMarkdownDocument(relativePath)) {
+    return titleFromRelativePath(relativePath);
+  }
+
+  try {
+    return extractMarkdownH1(readFileSync(filePath, "utf8")) || titleFromRelativePath(relativePath);
+  } catch {
+    return titleFromRelativePath(relativePath);
+  }
+}
+
+function isMarkdownDocument(fileName: string): boolean {
+  const extension = path.posix.extname(fileName).toLowerCase();
+  return extension === ".md" || extension === ".markdown";
 }
 
 function formatJsonContent(content: string): string {

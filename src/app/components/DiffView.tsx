@@ -12,13 +12,19 @@ import type { ReactNode } from "react";
 
 type DiffViewProps = {
   diff: RenderedDiffEntry[];
+  resolveImageUrl?: (source: string) => string;
 };
 
-export function DiffView({ diff }: DiffViewProps) {
+export function DiffView({ diff, resolveImageUrl }: DiffViewProps) {
   return (
     <div className="diff-view rendered-diff-view" aria-label="Rendered Markdown diff">
       {diff.map((entry, index) => (
-        <DiffEntryView entry={entry} index={index} key={`${entry.kind}-${index}`} />
+        <DiffEntryView
+          entry={entry}
+          index={index}
+          key={`${entry.kind}-${index}`}
+          resolveImageUrl={resolveImageUrl}
+        />
       ))}
     </div>
   );
@@ -27,9 +33,11 @@ export function DiffView({ diff }: DiffViewProps) {
 function DiffEntryView({
   entry,
   index,
+  resolveImageUrl,
 }: {
   entry: RenderedDiffEntry;
   index: number;
+  resolveImageUrl?: (source: string) => string;
 }) {
   if (entry.kind === "code") {
     return <CodeDiff lines={entry.lines} language={entry.language} />;
@@ -45,7 +53,11 @@ function DiffEntryView({
 
   return (
     <section className={`rendered-diff-block rendered-diff-block-${entry.type}`}>
-      <MarkdownDocument artifactId={`diff:${index}`} markdown={entry.markdown} />
+      <MarkdownDocument
+        artifactId={`diff:${index}`}
+        markdown={entry.markdown}
+        resolveImageUrl={resolveImageUrl}
+      />
     </section>
   );
 }

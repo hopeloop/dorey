@@ -79,8 +79,30 @@ describe("revision agent poll CLI", () => {
     }
 
     assert.match(options.text, /dorey --review-file <file>/);
+    assert.match(options.text, /dorey --review-folder <folder>/);
     assert.match(options.text, /dorey --demo/);
     assert.doesNotMatch(options.text, /dorey\s+Recommended for interactive review/);
+  });
+
+  it("parses folder review launch options", () => {
+    const options = parseDoreyCliArgs(
+      ["--review-folder", "docs", "--no-open"],
+      {
+        CODEX_THREAD_ID: "codex-thread-1",
+      },
+      "/tmp/review-workspace",
+    );
+
+    assert.equal(options.command, "launch");
+
+    if (options.command !== "launch") {
+      return;
+    }
+
+    assert.equal(options.launchMode, "folder");
+    assert.equal(options.reviewFolderPath, "/tmp/review-workspace/docs");
+    assert.equal(options.reviewFilePath, undefined);
+    assert.equal(options.previewOnly, false);
   });
 
   it("parses single-file review launch options", () => {
@@ -134,7 +156,7 @@ describe("revision agent poll CLI", () => {
           {},
           "/tmp/review-workspace",
         ),
-      /Choose either --review-file or --demo/,
+      /Choose exactly one of --review-file, --review-folder, or --demo/,
     );
   });
 
@@ -575,13 +597,14 @@ describe("revision agent poll CLI", () => {
     assert.equal(env.DOREY_PREVIEW_ONLY, "0");
   });
 
-  it("materializes a single review file into a one-artifact workflow run", async () => {
+  it("materializes a single review file and its referenced local images", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "dorey-review-file-"));
     const source = path.join(root, "docs", "design.md");
 
     try {
-      await mkdir(path.dirname(source), { recursive: true });
-      await writeFile(source, "# Design\n", "utf8");
+      await mkdir(path.join(root, "docs", "assets"), { recursive: true });
+      await writeFile(source, "# Design\n\n![Diagram](assets/diagram.png)\n", "utf8");
+      await writeFile(path.join(root, "docs", "assets", "diagram.png"), "png-bytes");
 
       const result = await prepareDoreyLaunchWorkspace({
         launchMode: "single-file",
@@ -591,14 +614,64 @@ describe("revision agent poll CLI", () => {
       const manifestPath = path.join(result.workflowRoot, result.runId, "workflow-run.json");
       const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
       const copied = await readFile(
-        path.join(result.workflowRoot, result.runId, "md", "design.md"),
+        path.join(result.workflowRoot, result.runId, "documents", "design.md"),
+        "utf8",
+      );
+      const copiedImage = await readFile(
+        path.join(result.workflowRoot, result.runId, "documents", "assets", "diagram.png"),
         "utf8",
       );
 
       assert.equal(manifest.runId, result.runId);
-      assert.equal(manifest.taskTitle, "Review design.md");
-      assert.equal(manifest.artifacts.codingPlan, "md/design.md");
-      assert.equal(copied, "# Design\n");
+      assert.equal(manifest.taskTitle, "docs");
+      assert.equal(manifest.source.mode, "single-file");
+      assert.equal(manifest.artifacts, undefined);
+      assert.match(copied, /^# Design/m);
+      assert.equal(copiedImage, "png-bytes");
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("materializes a review folder recursively while skipping repository internals and symlinks", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "dorey-review-folder-"));
+    const sourceRoot = path.join(root, "docs");
+
+    try {
+      await mkdir(path.join(sourceRoot, "guides"), { recursive: true });
+      await mkdir(path.join(sourceRoot, "assets"), { recursive: true });
+      await mkdir(path.join(sourceRoot, "node_modules"), { recursive: true });
+      await writeFile(path.join(sourceRoot, "README.md"), "# 文件说明\n", "utf8");
+      await writeFile(path.join(sourceRoot, "guides", "intro.markdown"), "# 介绍\n", "utf8");
+      await writeFile(path.join(sourceRoot, "assets", "diagram.png"), "png-bytes");
+      await writeFile(path.join(sourceRoot, "node_modules", "hidden.md"), "# Hidden\n", "utf8");
+      await symlink(
+        path.join(sourceRoot, "assets", "diagram.png"),
+        path.join(sourceRoot, "linked.png"),
+      );
+
+      const result = await prepareDoreyLaunchWorkspace({
+        launchMode: "folder",
+        reviewFolderPath: sourceRoot,
+      });
+      const runRoot = path.join(result.workflowRoot, result.runId);
+      const manifest = JSON.parse(
+        await readFile(path.join(runRoot, "workflow-run.json"), "utf8"),
+      );
+
+      assert.equal(manifest.taskTitle, "docs");
+      assert.equal(manifest.source.mode, "folder");
+      assert.match(await readFile(path.join(runRoot, "documents", "README.md"), "utf8"), /文件说明/);
+      assert.match(
+        await readFile(path.join(runRoot, "documents", "guides", "intro.markdown"), "utf8"),
+        /介绍/,
+      );
+      assert.equal(
+        await readFile(path.join(runRoot, "documents", "assets", "diagram.png"), "utf8"),
+        "png-bytes",
+      );
+      await assert.rejects(stat(path.join(runRoot, "documents", "node_modules", "hidden.md")));
+      await assert.rejects(stat(path.join(runRoot, "documents", "linked.png")));
     } finally {
       await rm(root, { force: true, recursive: true });
     }

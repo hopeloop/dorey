@@ -51,21 +51,26 @@ describe("review workspace UI contract", () => {
     assert.doesNotMatch(appSource, />新建</);
   });
 
-  it("defaults workflow runs to user-facing documents and hides internals", async () => {
+  it("shows a document file tree without leaking workflow terminology", async () => {
     const appSource = await readFile("src/app/App.tsx", "utf8");
+    const styles = await readFile("src/app/styles.css", "utf8");
 
-    assert.match(appSource, /Workflow Runs/);
-    assert.match(appSource, /显示隐藏产物/);
+    assert.doesNotMatch(appSource, /Workflow Runs|Execution 执行|Coding Plan|编码计划/);
+    assert.doesNotMatch(appSource, /显示隐藏产物/);
+    assert.match(appSource, /DocumentTree/);
+    assert.match(appSource, /document-tree-root/);
+    assert.match(appSource, /FolderOpen/);
+    assert.match(appSource, /FileText/);
+    assert.match(appSource, /displayPathForArtifact/);
+    assert.match(appSource, /extractMarkdownH1/);
     assert.match(appSource, /isDefaultUserVisibleArtifact/);
     assert.match(appSource, /workflow\.group !== "scratch"/);
     assert.match(appSource, /workflow\.group !== "metadata"/);
     assert.match(appSource, /workflow\.kind === "markdown"/);
     assert.match(appSource, /workflow\.kind === "html"/);
-    assert.match(appSource, /Scratch 草稿/);
-    assert.match(appSource, /Document 发布文档/);
-    assert.match(appSource, /Execution 执行/);
-    assert.match(appSource, /Metadata 元数据/);
     assert.match(appSource, /只读产物不支持评论/);
+    assert.match(styles, /\.document-tree-file\.active/);
+    assert.match(styles, /\.document-tree-children/);
   });
 
   it("renders PlantUML fenced code blocks with the client-side PlantUML engine", async () => {
@@ -85,6 +90,7 @@ describe("review workspace UI contract", () => {
 
     assert.match(packageJson, /"@plantuml\/core"/);
     assert.match(markdownDocument, /PlantUmlDiagram/);
+    assert.match(markdownDocument, /resolveImageUrl/);
     assert.match(markdownDocument, /language-plantuml/);
     assert.match(plantUmlDiagram, /dangerouslySetInnerHTML/);
     assert.match(plantUmlDiagram, /显示源码/);
@@ -170,7 +176,7 @@ describe("review workspace UI contract", () => {
     const bootstrapSource = await readFile("src/app/bootstrap.ts", "utf8");
     const viteConfig = await readFile("vite.config.ts", "utf8");
 
-    assert.match(bootstrapSource, /launchMode\?: "single-file" \| "demo"/);
+    assert.match(bootstrapSource, /launchMode\?: "single-file" \| "folder" \| "demo"/);
     assert.match(appSource, /bootstrap\.launchMode === "demo"/);
     assert.match(appSource, /内置 Demo/);
     assert.match(appSource, /不是在审阅本地文件或仓库产物/);
@@ -207,7 +213,7 @@ describe("review workspace UI contract", () => {
     assert.match(appSource, /CLI 会话 ID/);
     assert.doesNotMatch(appSource, /批量分类/);
 
-    assert.match(styles, /\.app-shell\s*{[^}]*grid-template-columns:\s*212px minmax\(0,\s*1fr\) 488px;/s);
+    assert.match(styles, /\.app-shell\s*{[^}]*grid-template-columns:\s*260px minmax\(0,\s*1fr\) 488px;/s);
     assert.match(styles, /\.review-sidebar\s*{[^}]*grid-template-rows:\s*minmax\(390px,\s*1fr\) auto minmax\(210px,\s*0\.48fr\);/s);
     assert.match(styles, /\.comment-list\s*{[^}]*gap:\s*5px;[^}]*overflow:\s*auto;/s);
     assert.match(styles, /\.comment-item\.compact\s*{[^}]*gap:\s*4px;[^}]*padding:\s*6px 7px;/s);
@@ -244,6 +250,7 @@ describe("review workspace UI contract", () => {
     const cliSource = await readFile("src/server/revision-agent-poll-cli.ts", "utf8");
 
     assert.match(readme, /dorey --review-file path\/to\/design\.md/);
+    assert.match(readme, /dorey --review-folder path\/to\/docs/);
     assert.match(readme, /dorey --demo/);
     assert.match(readme, /dorey poll/);
     assert.match(readme, /Submit All/);

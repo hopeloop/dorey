@@ -5,6 +5,7 @@ import type {
   WorkflowRevisionTraceResult,
   WorkflowRunSummary,
 } from "../server/workflow-run-loader.js";
+import { resolveMarkdownAssetPath } from "../shared/markdown-document.js";
 
 export async function listWorkflowRuns(): Promise<WorkflowRunSummary[]> {
   const response = await fetchJson<{ runs: WorkflowRunSummary[] }>(
@@ -31,6 +32,20 @@ export async function getWorkflowArtifact(
   return await fetchJson<WorkflowArtifactContent>(
     `/api/workflow-runs/${encodeURIComponent(runKey)}/artifacts/${encodeURIComponent(artifactId)}`,
   );
+}
+
+export function getWorkflowAssetUrl(
+  runKey: string,
+  documentRelativePath: string,
+  source: string,
+): string {
+  const relativePath = resolveMarkdownAssetPath(documentRelativePath, source);
+
+  if (!relativePath) {
+    return source;
+  }
+
+  return `/api/workflow-runs/${encodeURIComponent(runKey)}/assets/${encodeURIComponent(relativePath)}`;
 }
 
 export async function saveWorkflowRevisionTrace(input: {

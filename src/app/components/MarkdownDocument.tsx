@@ -9,6 +9,7 @@ type MarkdownDocumentProps = {
   markdown: string;
   enableSelection?: boolean;
   onMouseUp?: () => void;
+  resolveImageUrl?: (source: string) => string;
 };
 
 export const MarkdownDocument = memo(function MarkdownDocument({
@@ -16,6 +17,7 @@ export const MarkdownDocument = memo(function MarkdownDocument({
   markdown,
   enableSelection = false,
   onMouseUp,
+  resolveImageUrl,
 }: MarkdownDocumentProps) {
   let blockSequence = 0;
   const nextBlockId = (kind: string) => {
@@ -47,6 +49,9 @@ export const MarkdownDocument = memo(function MarkdownDocument({
     ),
     li: ({ node: _node, ...props }) => (
       <li data-block-id={nextBlockId("li")} {...props} />
+    ),
+    img: ({ node: _node, src, ...props }) => (
+      <img src={src && resolveImageUrl ? resolveImageUrl(src) : src} {...props} />
     ),
     blockquote: ({ node: _node, ...props }) => (
       <blockquote data-block-id={nextBlockId("blockquote")} {...props} />

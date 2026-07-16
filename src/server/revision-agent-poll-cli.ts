@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -23,6 +23,7 @@ import {
   discoverWorkflowRoots,
   hasWorkflowRunManifest,
 } from "./workflow-root.js";
+import { resolveMarkdownAssetPath } from "../shared/markdown-document.js";
 
 export type RevisionAgentPollOptions = {
   baseUrl: string;
@@ -32,7 +33,7 @@ export type RevisionAgentPollOptions = {
   timeoutMs: number;
 };
 
-export type DoreyLaunchMode = "single-file" | "demo";
+export type DoreyLaunchMode = "single-file" | "folder" | "demo";
 
 export type DoreyLaunchWorkspace = {
   runId: string;
@@ -93,6 +94,7 @@ export type DoreyCliOptions =
       previewOnly: boolean;
       port: number;
       reviewFilePath?: string;
+      reviewFolderPath?: string;
       targetKey?: string;
       timeoutMs: number;
       workflowRoot?: string;
@@ -449,6 +451,7 @@ function parseDoreyLaunchArgs(
   let port = numberOption(firstEnv(env, "DOREY_PORT"), defaultPort);
   let portWasExplicit = false;
   let reviewFilePath: string | undefined;
+  let reviewFolderPath: string | undefined;
   let targetKey: string | undefined;
   let timeoutMs = numberOption(firstEnv(env, "DOREY_TIMEOUT_MS"), defaultTimeoutMs);
   let workspaceRoot = resolvePathOption(firstEnv(env, "DOREY_WORKSPACE_ROOT"), cwd);
@@ -485,6 +488,12 @@ function parseDoreyLaunchArgs(
 
     if (arg === "--review-file") {
       reviewFilePath = resolvePathOption(requiredValue(argv, index, arg), cwd);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--review-folder") {
+      reviewFolderPath = resolvePathOption(requiredValue(argv, index, arg), cwd);
       index += 1;
       continue;
     }
@@ -568,7 +577,11 @@ function parseDoreyLaunchArgs(
 
   const baseUrl = normalizeBaseUrl(baseUrlOverride ?? `http://${host}:${port}`);
   targetKey ??= resolveRevisionPollTargetFromEnv(env);
-  const launchMode = resolveDoreyLaunchMode({ demoRequested, reviewFilePath });
+  const launchMode = resolveDoreyLaunchMode({
+    demoRequested,
+    reviewFilePath,
+    reviewFolderPath,
+  });
 
   if (launchMode === "demo") {
     workspaceRoot = path.join(
@@ -606,6 +619,7 @@ function parseDoreyLaunchArgs(
     previewOnly,
     port,
     reviewFilePath,
+    reviewFolderPath,
     targetKey,
     timeoutMs,
     workflowRoot,
@@ -618,34 +632,60 @@ function parseDoreyLaunchArgs(
 function resolveDoreyLaunchMode({
   demoRequested,
   reviewFilePath,
+  reviewFolderPath,
 }: {
   demoRequested: boolean;
   reviewFilePath?: string;
+  reviewFolderPath?: string;
 }): DoreyLaunchMode {
-  if (demoRequested && reviewFilePath) {
-    throw new Error("Choose either --review-file or --demo, not both.");
+  const selectedTargets = [
+    demoRequested ? "--demo" : undefined,
+    reviewFilePath ? "--review-file" : undefined,
+    reviewFolderPath ? "--review-folder" : undefined,
+  ].filter(Boolean);
+
+  if (selectedTargets.length > 1) {
+    throw new Error("Choose exactly one of --review-file, --review-folder, or --demo.");
   }
 
   if (demoRequested) {
     return "demo";
   }
 
+  if (reviewFolderPath) {
+    return "folder";
+  }
+
   if (reviewFilePath) {
     return "single-file";
   }
 
-  throw new Error("Missing review target. Use dorey --review-file <file> or dorey --demo.");
+  throw new Error(
+    "Missing review target. Use dorey --review-file <file>, dorey --review-folder <folder>, or dorey --demo.",
+  );
 }
 
 export async function prepareDoreyLaunchWorkspace(input: {
   launchMode: DoreyLaunchMode;
   reviewFilePath?: string;
+  reviewFolderPath?: string;
   workflowRoot?: string;
   workspaceRoot?: string;
 }): Promise<DoreyLaunchWorkspace> {
   if (input.launchMode === "demo") {
     return materializeDemoLaunchWorkspace(input);
   }
+
+  if (input.launchMode === "folder") {
+    return await materializeReviewFolderWorkspace(input);
+  }
+
+  return await materializeReviewFileWorkspace(input);
+}
+
+async function materializeReviewFileWorkspace(input: {
+  reviewFilePath?: string;
+}): Promise<DoreyLaunchWorkspace> {
 
   if (!input.reviewFilePath) {
     throw new Error("Missing review file. Use dorey --review-file <file>.");
@@ -674,35 +714,238 @@ export async function prepareDoreyLaunchWorkspace(input: {
   const workspaceRoot = path.join(tmpdir(), "dorey-review-runs", runId);
   const workflowRoot = path.join(workspaceRoot, "workflow-runs");
   const runRoot = path.join(workflowRoot, runId);
-  const mdDir = path.join(runRoot, "md");
+  const documentsDir = path.join(runRoot, "documents");
 
-  await mkdir(mdDir, { recursive: true });
+  await mkdir(documentsDir, { recursive: true });
   await mkdir(path.join(runRoot, "review"), { recursive: true });
-  await copyFile(sourcePath, path.join(mdDir, fileName));
-  await writeFile(
-    path.join(runRoot, "workflow-run.json"),
-    `${JSON.stringify(
-      {
-        artifacts: {
-          codingPlan: `md/${fileName}`,
-        },
-        review: {
-          root: "review",
-        },
-        runId,
-        taskTitle: `Review ${fileName}`,
-      },
-      null,
-      2,
-    )}\n`,
-    "utf8",
-  );
+  await copyFile(sourcePath, path.join(documentsDir, fileName));
+  await copyReferencedLocalImages(sourcePath, documentsDir, fileName);
+  await writeLaunchManifest({
+    runId,
+    runRoot,
+    sourceMode: "single-file",
+    taskTitle: path.basename(path.dirname(sourcePath)),
+  });
 
   return {
     runId,
     workflowRoot,
     workspaceRoot,
   };
+}
+
+async function materializeReviewFolderWorkspace(input: {
+  reviewFolderPath?: string;
+}): Promise<DoreyLaunchWorkspace> {
+  if (!input.reviewFolderPath) {
+    throw new Error("Missing review folder. Use dorey --review-folder <folder>.");
+  }
+
+  const sourceRoot = path.resolve(input.reviewFolderPath);
+  const sourceStat = await stat(sourceRoot).catch(() => undefined);
+
+  if (!sourceStat) {
+    throw new Error(`Review folder does not exist: ${sourceRoot}`);
+  }
+
+  if (!sourceStat.isDirectory()) {
+    throw new Error(`Review folder is not a directory: ${sourceRoot}`);
+  }
+
+  const markdownFiles = await listReviewMarkdownFiles(sourceRoot);
+
+  if (markdownFiles.length === 0) {
+    throw new Error(`Review folder contains no Markdown files: ${sourceRoot}`);
+  }
+
+  const hash = createHash("sha256").update(sourceRoot).digest("hex").slice(0, 12);
+  const runId = `folder-${Date.now()}-${hash}`;
+  const workspaceRoot = path.join(tmpdir(), "dorey-review-runs", runId);
+  const workflowRoot = path.join(workspaceRoot, "workflow-runs");
+  const runRoot = path.join(workflowRoot, runId);
+  const documentsDir = path.join(runRoot, "documents");
+
+  await mkdir(documentsDir, { recursive: true });
+  await mkdir(path.join(runRoot, "review"), { recursive: true });
+  await copyReviewFolder(sourceRoot, documentsDir);
+  await writeLaunchManifest({
+    runId,
+    runRoot,
+    sourceMode: "folder",
+    taskTitle: path.basename(sourceRoot),
+  });
+
+  return {
+    runId,
+    workflowRoot,
+    workspaceRoot,
+  };
+}
+
+async function writeLaunchManifest({
+  runId,
+  runRoot,
+  sourceMode,
+  taskTitle,
+}: {
+  runId: string;
+  runRoot: string;
+  sourceMode: "single-file" | "folder";
+  taskTitle: string;
+}): Promise<void> {
+  await writeFile(
+    path.join(runRoot, "workflow-run.json"),
+    `${JSON.stringify(
+      {
+        review: {
+          root: "review",
+        },
+        runId,
+        source: {
+          mode: sourceMode,
+        },
+        taskTitle,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+async function copyReviewFolder(sourceRoot: string, destinationRoot: string): Promise<void> {
+  const entries = await readdir(sourceRoot, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (entry.name === ".git" || entry.name === "node_modules") {
+      continue;
+    }
+
+    const sourcePath = path.join(sourceRoot, entry.name);
+    const destinationPath = path.join(destinationRoot, entry.name);
+
+    if (entry.isDirectory()) {
+      await mkdir(destinationPath, { recursive: true });
+      await copyReviewFolder(sourcePath, destinationPath);
+    } else if (entry.isFile()) {
+      await mkdir(path.dirname(destinationPath), { recursive: true });
+      await copyFile(sourcePath, destinationPath);
+    }
+  }
+}
+
+async function listReviewMarkdownFiles(sourceRoot: string): Promise<string[]> {
+  const result: string[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules") {
+        continue;
+      }
+
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+      } else if (entry.isFile() && isMarkdownFile(entry.name)) {
+        result.push(entryPath);
+      }
+    }
+  }
+
+  await walk(sourceRoot);
+  return result.sort();
+}
+
+async function copyReferencedLocalImages(
+  sourcePath: string,
+  destinationRoot: string,
+  documentRelativePath: string,
+): Promise<void> {
+  const content = await readFile(sourcePath, "utf8");
+  const sourceRoot = path.dirname(sourcePath);
+  const imageSources = extractLocalImageSources(content);
+
+  for (const imageSource of imageSources) {
+    const relativeAssetPath = resolveMarkdownAssetPath(documentRelativePath, imageSource);
+
+    if (!relativeAssetPath) {
+      continue;
+    }
+
+    const sourceAssetPath = path.resolve(sourceRoot, relativeAssetPath);
+    const relativeToSource = path.relative(sourceRoot, sourceAssetPath);
+
+    if (relativeToSource.startsWith("..") || path.isAbsolute(relativeToSource)) {
+      continue;
+    }
+
+    const assetStat = await stat(sourceAssetPath).catch(() => undefined);
+
+    if (!assetStat?.isFile()) {
+      continue;
+    }
+
+    const destinationPath = path.join(destinationRoot, relativeAssetPath);
+    await mkdir(path.dirname(destinationPath), { recursive: true });
+    await copyFile(sourceAssetPath, destinationPath);
+  }
+}
+
+function extractLocalImageSources(markdown: string): string[] {
+  const sources = new Set<string>();
+  const inlineImagePattern = /!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))/g;
+  const htmlImagePattern = /<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  const referenceImagePattern = /!\[[^\]]*\]\[([^\]]+)\]/g;
+  const referenceDefinitionPattern = /^\s*\[([^\]]+)\]:\s*(?:<([^>]+)>|(\S+))/gm;
+  const referencedIds = new Set<string>();
+  const definitions = new Map<string, string>();
+
+  for (const match of markdown.matchAll(inlineImagePattern)) {
+    const source = match[1] ?? match[2];
+
+    if (source) {
+      sources.add(source);
+    }
+  }
+
+  for (const match of markdown.matchAll(htmlImagePattern)) {
+    if (match[1]) {
+      sources.add(match[1]);
+    }
+  }
+
+  for (const match of markdown.matchAll(referenceImagePattern)) {
+    if (match[1]) {
+      referencedIds.add(match[1].trim().toLowerCase());
+    }
+  }
+
+  for (const match of markdown.matchAll(referenceDefinitionPattern)) {
+    const id = match[1]?.trim().toLowerCase();
+    const source = match[2] ?? match[3];
+
+    if (id && source) {
+      definitions.set(id, source);
+    }
+  }
+
+  for (const id of referencedIds) {
+    const source = definitions.get(id);
+
+    if (source) {
+      sources.add(source);
+    }
+  }
+
+  return [...sources];
+}
+
+function isMarkdownFile(fileName: string): boolean {
+  const extension = path.extname(fileName).toLowerCase();
+  return extension === ".md" || extension === ".markdown";
 }
 
 async function materializeDemoLaunchWorkspace(input: {
@@ -1333,6 +1576,7 @@ export function buildDoreyHelpText(): string {
     "",
     "Usage:",
     "  dorey --review-file <file>  Review one local Markdown or HTML document.",
+    "  dorey --review-folder <folder>  Review Markdown documents under one local folder.",
     "  dorey --demo                Open the built-in Dorey product demo.",
     "  dorey poll                  Wait for submit payloads from an existing Dorey server.",
     "  dorey status                Print the running server health, workspace root, and launcher context.",
@@ -1358,7 +1602,7 @@ export function buildNoPollPreviewWarning(targetKey?: string): string {
 
   return [
     "[dorey:warning] 当前是 --preview 预览模式，这个 CLI 不会收到 review 提交。",
-    `[dorey:warning] 交互 review 请运行 dorey --review-file <file>${targetHint} 或 dorey --demo${targetHint}，并去掉 --preview。`,
+    `[dorey:warning] 交互 review 请运行 dorey --review-file <file>${targetHint}、dorey --review-folder <folder>${targetHint} 或 dorey --demo${targetHint}，并去掉 --preview。`,
   ].join("\n");
 }
 

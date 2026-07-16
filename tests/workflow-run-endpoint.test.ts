@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -49,6 +49,44 @@ describe("workflow run endpoint handler", () => {
     const artifactBody = artifact.body as WorkflowArtifactContent;
     assert.equal(artifactBody.artifact.kind, "plantuml");
     assert.match(artifactBody.displayMarkdown, /^```plantuml\n@startuml/m);
+  });
+
+  it("serves run-local images with their real content type", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workflow-image-endpoint-"));
+    const runRoot = path.join(root, "image-run");
+    await mkdir(path.join(runRoot, "documents", "assets"), { recursive: true });
+    await writeFile(
+      path.join(runRoot, "workflow-run.json"),
+      JSON.stringify({ runId: "image-run", taskTitle: "Images" }),
+      "utf8",
+    );
+    await writeFile(path.join(runRoot, "documents", "doc.md"), "# Doc\n", "utf8");
+    await writeFile(
+      path.join(runRoot, "documents", "assets", "diagram.png"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
+    const list = await handleWorkflowRunRequest({
+      body: "",
+      method: "GET",
+      root,
+      url: "/api/workflow-runs",
+    });
+    assert.equal(list.status, 200);
+    const runKey = (list.body as { runs: WorkflowRunSummary[] }).runs[0]!.runKey;
+    const image = await handleWorkflowRunRequest({
+      body: "",
+      method: "GET",
+      root,
+      url: `/api/workflow-runs/${runKey}/assets/${encodeURIComponent("documents/assets/diagram.png")}`,
+    });
+
+    assert.equal(image.status, 200);
+    assert.ok("contentType" in image);
+
+    if ("contentType" in image) {
+      assert.equal(image.contentType, "image/png");
+      assert.deepEqual(image.body, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    }
   });
 
   it("writes revision traces and accepted review results", async () => {

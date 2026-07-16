@@ -179,5 +179,7 @@ function numberOption(value: string | undefined, fallback: number): number {
 }
 
 function parseDoreyLaunchMode(value: string | undefined): DoreyLaunchMode | undefined {
-  return value === "single-file" || value === "demo" ? value : undefined;
+  return value === "single-file" || value === "folder" || value === "demo"
+    ? value
+    : undefined;
 }
