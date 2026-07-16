@@ -4,6 +4,7 @@ import type { BatchRevisionResponse } from "../contracts/index.js";
 import {
   listWorkflowRuns,
   readWorkflowRunArtifact,
+  readWorkflowRunAsset,
   writeWorkflowReviewResult,
   writeWorkflowRevisionTrace,
   type WorkflowReviewResult,
@@ -27,6 +28,11 @@ export type WorkflowRunHttpResponse =
         | Awaited<ReturnType<typeof readWorkflowRunArtifact>>
         | WorkflowRevisionTraceResult
         | WorkflowReviewResult;
+    }
+  | {
+      status: 200;
+      body: Buffer;
+      contentType: string;
     }
   | {
       status: 400 | 404 | 405 | 500;
@@ -68,6 +74,20 @@ export async function handleWorkflowRunRequest({
           root,
           runKey: route.runKey,
         }),
+      };
+    }
+
+    if (method === "GET" && route.kind === "asset") {
+      const asset = await readWorkflowRunAsset({
+        relativePath: route.relativePath,
+        root,
+        runKey: route.runKey,
+      });
+
+      return {
+        status: 200,
+        body: asset.body,
+        contentType: asset.contentType,
       };
     }
 
@@ -141,8 +161,16 @@ export function createWorkflowRunMiddleware(options: { root: string }) {
       });
 
       res.statusCode = result.status;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(JSON.stringify(result.body));
+
+      if ("contentType" in result) {
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Content-Type", result.contentType);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.end(result.body);
+      } else {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify(result.body));
+      }
     } catch (error) {
       next?.(error);
     }
@@ -161,6 +189,7 @@ type WorkflowRoute =
   | { kind: "runs" }
   | { kind: "run"; runKey: string }
   | { artifactId: string; kind: "artifact"; runKey: string }
+  | { kind: "asset"; relativePath: string; runKey: string }
   | { artifactId: string; kind: "revision"; runKey: string }
   | { artifactId: string; kind: "accept"; runKey: string }
   | { kind: "unknown" };
@@ -197,6 +226,14 @@ function parseWorkflowRoute(url: string): WorkflowRoute {
     if (parts.length === 6 && parts[5] === "accept") {
       return { artifactId, kind: "accept", runKey };
     }
+  }
+
+  if (parts.length === 5 && parts[3] === "assets" && parts[4]) {
+    return {
+      kind: "asset",
+      relativePath: decodeURIComponent(parts[4]),
+      runKey,
+    };
   }
 
   return { kind: "unknown" };

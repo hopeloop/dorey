@@ -38,7 +38,7 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 212px minmax(0, 1fr) 488px;
+  grid-template-columns: 260px minmax(0, 1fr) 488px;
   height: 100vh;
   min-height: 100vh;
   overflow: hidden;
@@ -128,91 +128,117 @@ button:disabled {
   margin: 0;
 }
 
-.artifact-list {
-  display: grid;
-  gap: 14px;
-}
-
-.workflow-run-picker {
-  color: #334253;
-  display: grid;
-  font-size: 12px;
-  font-weight: 700;
-  gap: 6px;
-  margin-bottom: 18px;
-}
-
-.workflow-run-picker select {
-  background: #ffffff;
-  border: 1px solid #cbd4e1;
-  border-radius: 8px;
-  color: #202a35;
-  min-width: 0;
-  padding: 9px 10px;
-}
-
 .workflow-error {
   font-size: 12px;
   margin-bottom: 14px;
 }
 
-.hidden-artifacts-toggle {
+.document-tree-heading {
   align-items: center;
-  color: #536170;
   display: flex;
-  font-size: 12px;
-  gap: 8px;
-  margin: -4px 0 16px;
+  justify-content: space-between;
+  margin-bottom: 12px;
 }
 
-.hidden-artifacts-toggle input {
-  height: 15px;
-  margin: 0;
-  width: 15px;
+.document-tree-heading strong {
+  color: #334253;
+  font-size: 13px;
 }
 
-.artifact-group {
-  display: grid;
-  gap: 8px;
-}
-
-.artifact-group-title {
+.document-tree-heading span,
+.document-tree-loading {
   color: #657282;
   font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-transform: uppercase;
 }
 
-.artifact-item {
-  background: transparent;
-  border: 1px solid #d8dee7;
-  border-radius: 8px;
-  color: #202a35;
+.document-tree-root,
+.document-tree-folder {
+  align-items: center;
+  color: #334253;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.document-tree-root {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 9px;
+}
+
+.document-tree-root span,
+.document-tree-folder span {
+  overflow-wrap: anywhere;
+}
+
+.document-tree,
+.document-tree-directory,
+.document-tree-children {
   display: grid;
-  gap: 6px;
-  padding: 12px;
+  gap: 3px;
+}
+
+.document-tree-folder {
+  color: #536170;
+  font-size: 12px;
+  padding: 6px 7px;
+}
+
+.document-tree-children {
+  border-left: 1px solid #d8dee7;
+  margin-left: 13px;
+  padding-left: 7px;
+}
+
+.document-tree-file {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #202a35;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px;
   text-align: left;
   width: 100%;
 }
 
-.artifact-item:hover,
-.artifact-item-active {
-  border-color: #2f6fed;
+.document-tree-file:hover {
+  background: #f3f6fa;
+}
+
+.document-tree-file.active {
+  background: #eef4ff;
   box-shadow: inset 3px 0 0 #2f6fed;
+  color: #174ea6;
 }
 
-.artifact-item-readonly {
-  background: #f8fafc;
+.document-tree-file > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
 }
 
-.artifact-item span {
+.document-tree-file-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.document-tree-file-label strong,
+.document-tree-file-label small {
+  overflow-wrap: anywhere;
+}
+
+.document-tree-file-label strong {
+  font-size: 12px;
   font-weight: 700;
 }
 
-.artifact-item small {
+.document-tree-file-label small {
   color: #657282;
-  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .artifact-warning {
@@ -249,6 +275,18 @@ button:disabled {
 
 .workspace-toolbar h2 {
   font-size: 18px;
+}
+
+.workspace-document-heading {
+  flex: 1 1 auto;
+  min-width: 80px;
+}
+
+.workspace-document-heading h2,
+.workspace-document-heading > p:first-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toolbar-actions {
@@ -1362,6 +1400,10 @@ button:disabled {
   .toolbar-actions {
     justify-content: flex-start;
     margin-top: 12px;
+  }
+
+  .workspace-document-heading {
+    min-width: 0;
   }
 
   .document-stage {

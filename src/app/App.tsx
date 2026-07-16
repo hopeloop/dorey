@@ -1,5 +1,7 @@
 import {
   Check,
+  FileText,
+  FolderOpen,
   MessageSquarePlus,
   Pencil,
   RotateCcw,
@@ -50,6 +52,7 @@ import { CodexDesktopAgentAdapter } from "../review/codex-desktop-agent-adapter.
 import { createRenderedDiff, type RenderedDiffEntry } from "../review/diff.js";
 import { getPopoverPosition } from "../review/popover-position.js";
 import { TraexAgentAdapter } from "../review/traex-agent-adapter.js";
+import { extractMarkdownH1 } from "../shared/markdown-document.js";
 import { DiffView } from "./components/DiffView";
 import { HtmlDocument } from "./components/HtmlDocument";
 import { MarkdownDocument } from "./components/MarkdownDocument";
@@ -71,6 +74,7 @@ import {
 } from "./session-state";
 import {
   getWorkflowArtifact,
+  getWorkflowAssetUrl,
   getWorkflowRun,
   listWorkflowRuns,
   saveWorkflowReviewResult,
@@ -140,43 +144,6 @@ const categoryLabels: Record<CommentCategory, string> = {
   structure: "结构调整",
 };
 
-const stageLabels: Record<string, string> = {
-  requirement_orientation: "需求定向",
-  current_state_modeling: "现状建模",
-  change_convergence: "改动收敛",
-  open_questions: "待确认问题",
-  convergence_status: "收敛状态",
-  system_modeling: "系统建模",
-  technical_design: "技术方案",
-  document_manifest: "发布文档 Manifest",
-  coding_plan: "编码计划",
-  verification: "验证",
-  debug: "排障",
-  asset_feedback: "资产反馈",
-  trace: "Trace",
-};
-
-const workflowGroupLabels: Record<ArtifactWorkflowMetadata["group"], string> = {
-  scratch: "Scratch 草稿",
-  document: "Document 发布文档",
-  execution: "Execution 执行",
-  metadata: "Metadata 元数据",
-};
-
-const workflowGroupOrder: ArtifactWorkflowMetadata["group"][] = [
-  "scratch",
-  "document",
-  "execution",
-  "metadata",
-];
-
-const workflowKindLabels: Record<ArtifactWorkflowMetadata["kind"], string> = {
-  markdown: "Markdown",
-  html: "HTML",
-  plantuml: "PlantUML",
-  json: "JSON",
-};
-
 export function App() {
   const [artifacts, setArtifacts] = useState<Artifact[]>(cloneInitialArtifacts);
   const [bootstrap] = useState(getReviewWorkspaceBootstrap);
@@ -189,8 +156,6 @@ export function App() {
   >(null);
   const [isLoadingWorkflow, setIsLoadingWorkflow] = useState(false);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
-  const [showHiddenWorkflowArtifacts, setShowHiddenWorkflowArtifacts] =
-    useState(false);
   const [initialSessionState] = useState(() =>
     createInitialReviewSessions(
       artifacts,
@@ -293,20 +258,26 @@ export function App() {
     [activeArtifact?.id, queuedComments],
   );
 
-  const sidebarGroups = useMemo(
-    () =>
-      groupArtifactsForSidebar(artifacts, {
-        showHidden: showHiddenWorkflowArtifacts,
-      }),
-    [artifacts, showHiddenWorkflowArtifacts],
-  );
-  const hasHiddenWorkflowArtifacts = useMemo(
-    () =>
-      artifacts.some(
-        (artifact) =>
-          artifact.metadata?.workflow && !isDefaultUserVisibleArtifact(artifact),
-      ),
+  const navigationArtifacts = useMemo(
+    () => artifacts.filter(isDefaultUserVisibleArtifact),
     [artifacts],
+  );
+  const activeRun = useMemo(
+    () => workflowRuns.find((run) => run.runKey === activeWorkflowRunKey),
+    [activeWorkflowRunKey, workflowRuns],
+  );
+  const resolveActiveImageUrl = useCallback(
+    (source: string) => {
+      const workflow = activeArtifact?.metadata?.workflow;
+
+      return workflow
+        ? getWorkflowAssetUrl(workflow.runKey, workflow.relativePath, source)
+        : source;
+    },
+    [
+      activeArtifact?.metadata?.workflow?.relativePath,
+      activeArtifact?.metadata?.workflow?.runKey,
+    ],
   );
   const activeExecutionVisibility = useMemo(
     () =>
@@ -438,7 +409,6 @@ export function App() {
       setSourceEditDraft(null);
       setExternalSessionDraft("");
       setGlobalInstruction("");
-      setShowHiddenWorkflowArtifacts(false);
       setAgentMode(bootstrap.currentAgentProvider ?? "codex");
       window.getSelection()?.removeAllRanges();
     } catch (error) {
@@ -835,6 +805,8 @@ export function App() {
           ? {
               ...artifact,
               markdown: agentResult.response.revisedMarkdown,
+              title:
+                extractMarkdownH1(agentResult.response.revisedMarkdown) ?? artifact.title,
               metadata: {
                 ...artifact.metadata,
                 updatedAt: new Date().toISOString(),
@@ -903,26 +875,6 @@ export function App() {
     setSourceEditDraft(null);
     setViewerMode("current");
     setSubmitError(null);
-  }
-
-  function chooseWorkflowRun(runKey: string) {
-    if (runKey === activeWorkflowRunKey || isLoadingWorkflow) {
-      return;
-    }
-
-    void loadWorkflowRunByKey(runKey);
-  }
-
-  function changeHiddenWorkflowArtifactsVisibility(nextVisible: boolean) {
-    setShowHiddenWorkflowArtifacts(nextVisible);
-
-    if (!nextVisible && !isDefaultUserVisibleArtifact(active)) {
-      const nextArtifact = artifacts.find(isDefaultUserVisibleArtifact);
-
-      if (nextArtifact) {
-        chooseArtifact(nextArtifact.id);
-      }
-    }
   }
 
   function updateActiveSession(
@@ -1016,87 +968,37 @@ export function App() {
           <p>Doc Review · 本地审阅闭环</p>
         </div>
 
-        {workflowRuns.length > 0 ? (
-          <label className="workflow-run-picker">
-            <span>Workflow Runs</span>
-            <select
-              aria-label="Workflow Run"
-              disabled={isLoadingWorkflow}
-              onChange={(event) => chooseWorkflowRun(event.target.value)}
-              value={activeWorkflowRunKey ?? ""}
-            >
-              {workflowRuns.map((run) => (
-                <option key={run.runKey} value={run.runKey}>
-                  {run.taskTitle}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-
         {workflowError ? (
           <p className="error-message workflow-error">{workflowError}</p>
         ) : null}
 
-        {hasHiddenWorkflowArtifacts ? (
-          <label className="hidden-artifacts-toggle">
-            <input
-              checked={showHiddenWorkflowArtifacts}
-              onChange={(event) =>
-                changeHiddenWorkflowArtifactsVisibility(event.target.checked)
-              }
-              type="checkbox"
-            />
-            <span>显示隐藏产物</span>
-          </label>
-        ) : null}
-
-        <div className="artifact-list">
-          {sidebarGroups.map((group) => (
-            <div className="artifact-group" key={group.key}>
-              <div className="artifact-group-title">{group.label}</div>
-              {group.items.map((artifact) => {
-                const workflow = artifact.metadata?.workflow;
-
-                return (
-                  <button
-                    className={[
-                      "artifact-item",
-                      artifact.id === activeArtifact.id
-                        ? "artifact-item-active"
-                        : "",
-                      workflow?.reviewable === false
-                        ? "artifact-item-readonly"
-                        : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    key={artifact.id}
-                    onClick={() => chooseArtifact(artifact.id)}
-                    type="button"
-                  >
-                    <span>{artifact.title}</span>
-                    <small>
-                      {stageLabels[artifact.stage] ?? artifact.stage}
-                      {workflow ? ` · ${workflowKindLabels[workflow.kind]}` : ""}
-                    </small>
-                    {workflow?.warning ? (
-                      <small className="artifact-warning">{workflow.warning}</small>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
+        <div className="document-tree-heading">
+          <strong>文档</strong>
+          <span>{navigationArtifacts.length} 篇</span>
         </div>
+
+        <div className="document-tree-root">
+          <FolderOpen size={16} aria-hidden="true" />
+          <span>{activeRun?.taskTitle ?? "本地文档"}</span>
+        </div>
+
+        {isLoadingWorkflow ? (
+          <p className="document-tree-loading">正在加载文档…</p>
+        ) : (
+          <DocumentTree
+            activeArtifactId={activeArtifact.id}
+            artifacts={navigationArtifacts}
+            onChoose={chooseArtifact}
+          />
+        )}
         <p className="sidebar-signature">Powered by JO</p>
       </aside>
 
       <section className="reader-column">
         <div className="workspace-toolbar">
-          <div>
+          <div className="workspace-document-heading">
             <h2>{activeArtifact.title}</h2>
-            <p>{activeArtifact.metadata?.sourceRefs?.join(" · ")}</p>
+            <p>{displayPathForArtifact(activeArtifact)}</p>
             {bootstrap.launchMode === "demo" ? (
               <p className="info-message launch-notice demo-notice">
                 当前打开的是 Dorey 内置 Demo，不是在审阅本地文件或仓库产物。
@@ -1211,7 +1113,7 @@ export function App() {
               </div>
             </form>
           ) : viewerMode === "diff" && agentResult ? (
-            <DiffView diff={agentResult.diff} />
+            <DiffView diff={agentResult.diff} resolveImageUrl={resolveActiveImageUrl} />
           ) : activeWorkflow?.kind === "html" ? (
             <div ref={markdownRootRef}>
               <HtmlDocument
@@ -1232,6 +1134,7 @@ export function App() {
                 }
                 markdown={visibleMarkdown}
                 onMouseUp={handleSelectionMouseUp}
+                resolveImageUrl={resolveActiveImageUrl}
               />
             </div>
           )}
@@ -1744,51 +1647,161 @@ export function App() {
   );
 }
 
-type SidebarArtifactGroup = {
-  key: string;
-  label: string;
-  items: Artifact[];
-};
-
-type SidebarArtifactGroupOptions = {
-  showHidden: boolean;
-};
-
 type WorkflowArtifactDescriptor = {
   artifact: NormalizedWorkflowArtifact | WorkflowAsset;
 };
 
-function groupArtifactsForSidebar(
-  artifacts: Artifact[],
-  options: SidebarArtifactGroupOptions,
-): SidebarArtifactGroup[] {
-  const workflowArtifacts = artifacts.filter(
-    (artifact) => artifact.metadata?.workflow,
-  );
+type DocumentTreeNode = {
+  artifacts: Artifact[];
+  directories: DocumentTreeNode[];
+  name: string;
+  path: string;
+};
 
-  if (workflowArtifacts.length === 0) {
-    return [
-      {
-        key: "demo",
-        label: "示例文档",
-        items: artifacts,
-      },
-    ];
+function DocumentTree({
+  activeArtifactId,
+  artifacts,
+  onChoose,
+}: {
+  activeArtifactId: string;
+  artifacts: Artifact[];
+  onChoose: (artifactId: string) => void;
+}) {
+  const root = buildDocumentTree(artifacts);
+
+  return (
+    <div className="document-tree" role="tree">
+      <DocumentTreeLevel
+        activeArtifactId={activeArtifactId}
+        node={root}
+        onChoose={onChoose}
+      />
+    </div>
+  );
+}
+
+function DocumentTreeLevel({
+  activeArtifactId,
+  node,
+  onChoose,
+}: {
+  activeArtifactId: string;
+  node: DocumentTreeNode;
+  onChoose: (artifactId: string) => void;
+}) {
+  return (
+    <>
+      {node.directories.map((directory) => (
+        <div className="document-tree-directory" key={directory.path} role="treeitem">
+          <div className="document-tree-folder">
+            <FolderOpen size={14} aria-hidden="true" />
+            <span>{directory.name}</span>
+          </div>
+          <div className="document-tree-children" role="group">
+            <DocumentTreeLevel
+              activeArtifactId={activeArtifactId}
+              node={directory}
+              onChoose={onChoose}
+            />
+          </div>
+        </div>
+      ))}
+
+      {node.artifacts.map((artifact) => {
+        const fileName = fileNameForArtifact(artifact);
+        const selected = artifact.id === activeArtifactId;
+
+        return (
+          <button
+            aria-selected={selected}
+            className={selected ? "document-tree-file active" : "document-tree-file"}
+            key={artifact.id}
+            onClick={() => onChoose(artifact.id)}
+            role="treeitem"
+            type="button"
+          >
+            <FileText size={14} aria-hidden="true" />
+            <span className="document-tree-file-label">
+              <strong>{fileName}</strong>
+              {artifact.title !== titleFromFileName(fileName) ? (
+                <small>{artifact.title}</small>
+              ) : null}
+            </span>
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
+function buildDocumentTree(artifacts: Artifact[]): DocumentTreeNode {
+  const root: DocumentTreeNode = {
+    artifacts: [],
+    directories: [],
+    name: "",
+    path: "",
+  };
+
+  for (const artifact of artifacts) {
+    const segments = displayPathForArtifact(artifact).split("/").filter(Boolean);
+    const fileName = segments.pop();
+
+    if (!fileName) {
+      continue;
+    }
+
+    let current = root;
+
+    for (const segment of segments) {
+      const directoryPath = current.path ? `${current.path}/${segment}` : segment;
+      let directory = current.directories.find((item) => item.name === segment);
+
+      if (!directory) {
+        directory = {
+          artifacts: [],
+          directories: [],
+          name: segment,
+          path: directoryPath,
+        };
+        current.directories.push(directory);
+      }
+
+      current = directory;
+    }
+
+    current.artifacts.push(artifact);
   }
 
-  const visibleArtifacts = options.showHidden
-    ? workflowArtifacts
-    : workflowArtifacts.filter(isDefaultUserVisibleArtifact);
+  sortDocumentTree(root);
+  return root;
+}
 
-  return workflowGroupOrder
-    .map((group) => ({
-      key: group,
-      label: workflowGroupLabels[group],
-      items: visibleArtifacts.filter(
-        (artifact) => artifact.metadata?.workflow?.group === group,
-      ),
-    }))
-    .filter((group) => group.items.length > 0);
+function sortDocumentTree(node: DocumentTreeNode): void {
+  node.directories.sort((left, right) =>
+    left.name.localeCompare(right.name, "en", { numeric: true }),
+  );
+  node.artifacts.sort((left, right) =>
+    fileNameForArtifact(left).localeCompare(fileNameForArtifact(right), "en", { numeric: true }),
+  );
+
+  for (const directory of node.directories) {
+    sortDocumentTree(directory);
+  }
+}
+
+function displayPathForArtifact(artifact: Artifact): string {
+  const relativePath =
+    artifact.metadata?.workflow?.relativePath ?? artifact.metadata?.sourceRefs?.[0] ?? artifact.title;
+
+  return relativePath.replaceAll("\\", "/").replace(/^documents\//, "");
+}
+
+function fileNameForArtifact(artifact: Artifact): string {
+  return displayPathForArtifact(artifact).split("/").pop() ?? artifact.title;
+}
+
+function titleFromFileName(fileName: string): string {
+  return fileName.replace(/\.(?:md|markdown|html|htm)$/i, "").replace(/[-_]+/g, " ");
 }
 
 function isDefaultUserVisibleArtifact(artifact: Artifact): boolean {
@@ -1838,7 +1851,10 @@ function workflowContentToArtifact(content: WorkflowArtifactContent): Artifact {
   return {
     id: artifact.id,
     stage,
-    title: artifact.title,
+    title:
+      content.kind === "markdown"
+        ? extractMarkdownH1(content.content) ?? artifact.title
+        : artifact.title,
     markdown: content.displayMarkdown,
     metadata: {
       taskId: content.run.runId,
