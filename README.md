@@ -2,6 +2,13 @@
 
 Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档审阅闭环工具。
 
+> [!IMPORTANT]
+> **当前已支持：Codex Desktop、Codex CLI、TraeX CLI。** 其中，Codex Desktop 支持原对话回传，Codex CLI 和 TraeX CLI 支持原会话回传。
+>
+> Dorey 的评论提交依赖对应工具的 session adapter 和 `dorey poll`；**Cursor 和 Claude Code 目前均未适配**，无法把评论自动回传到它们的原会话。
+>
+> **欢迎共建新的 Agent 适配。** 如果你希望接入 Cursor、Claude Code 或其他 Agent 工具，可以基于现有 adapter 提交 MR，补齐会话识别、评论队列 poll 和修订结果回传能力。
+
 它的目标很简单：把 Markdown 技术文档放进一个本地 Web 工作台里，让人可以像评审文档一样选中文本、加评论、批量提交给当前 AI Agent 会话处理，也可以直接编辑 Markdown 源码，再把修订结果回写到页面和本地 review 目录。
 
 ## 核心能力
