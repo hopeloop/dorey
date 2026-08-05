@@ -4,3 +4,4 @@ node_modules/
 output/
 .playwright-cli/
 .local/
+tmp/
