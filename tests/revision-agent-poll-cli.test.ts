@@ -124,11 +124,39 @@ describe("revision agent poll CLI", () => {
     assert.equal(options.host, "127.0.0.1");
     assert.equal(options.launchMode, "single-file");
     assert.equal(options.openBrowser, false);
-    assert.equal(options.poll, true);
+    assert.equal(options.deliveryMode, "wake");
+    assert.equal(options.poll, false);
     assert.equal(options.previewOnly, false);
     assert.equal(options.reviewFilePath, "/tmp/review-workspace/README.md");
-    assert.equal(options.pollOptions?.targetKey, "codex-desktop:codex-thread-1");
+    assert.equal(options.pollOptions, undefined);
     assert.equal(options.targetKey, "codex-desktop:codex-thread-1");
+  });
+
+  it("keeps foreground polling as the default for CLI agents", () => {
+    const options = parseDoreyCliArgs(
+      ["--review-file", "README.md", "--no-open"],
+      { CODEX_CLI_SESSION_ID: "codex-cli-1" },
+      "/tmp/review-workspace",
+    );
+
+    assert.equal(options.command, "launch");
+    if (options.command !== "launch") return;
+    assert.equal(options.deliveryMode, "foreground");
+    assert.equal(options.poll, true);
+    assert.equal(options.pollOptions?.targetKey, "codex-cli:codex-cli-1");
+  });
+
+  it("allows explicit foreground delivery for troubleshooting", () => {
+    const options = parseDoreyCliArgs(
+      ["--review-file", "README.md", "--no-open", "--delivery", "foreground"],
+      { CODEX_THREAD_ID: "codex-thread-1" },
+      "/tmp/review-workspace",
+    );
+
+    assert.equal(options.command, "launch");
+    if (options.command !== "launch") return;
+    assert.equal(options.deliveryMode, "foreground");
+    assert.equal(options.poll, true);
   });
 
   it("parses the built-in demo launch without using the caller workspace for discovery", () => {
@@ -142,7 +170,8 @@ describe("revision agent poll CLI", () => {
 
     assert.equal(options.launchMode, "demo");
     assert.equal(options.openBrowser, false);
-    assert.equal(options.poll, true);
+    assert.equal(options.deliveryMode, "preview");
+    assert.equal(options.poll, false);
     assert.equal(options.pollOptions, undefined);
     assert.equal(options.previewOnly, true);
     assert.notEqual(options.workspaceRoot, "/tmp/random-repo");
@@ -196,7 +225,8 @@ describe("revision agent poll CLI", () => {
 
     if (launchOptions.command === "launch") {
       assert.equal(launchOptions.openBrowser, false);
-      assert.equal(launchOptions.poll, true);
+      assert.equal(launchOptions.deliveryMode, "preview");
+      assert.equal(launchOptions.poll, false);
       assert.equal(launchOptions.autoStop, false);
       assert.equal(launchOptions.port, 5180);
       assert.equal(launchOptions.baseUrl, "http://127.0.0.1:5180");
@@ -224,7 +254,7 @@ describe("revision agent poll CLI", () => {
     const defaultOptions = parseDoreyCliArgs(
       ["--review-file", "README.md"],
       {
-        CODEX_THREAD_ID: "codex-thread-1",
+        CODEX_CLI_SESSION_ID: "codex-cli-1",
         DOREY_AUTO_STOP_IDLE_MS: "1500",
       },
       "/tmp/review-workspace",
@@ -232,7 +262,7 @@ describe("revision agent poll CLI", () => {
     const keptOptions = parseDoreyCliArgs(
       ["--review-file", "README.md", "--keep-server"],
       {
-        CODEX_THREAD_ID: "codex-thread-1",
+        CODEX_CLI_SESSION_ID: "codex-cli-1",
         DOREY_AUTO_STOP_ON_REPLY: "1",
       },
       "/tmp/review-workspace",
@@ -248,14 +278,14 @@ describe("revision agent poll CLI", () => {
 
       const defaultEnv = buildDoreyServerEnv(
         {
-          CODEX_THREAD_ID: "codex-thread-1",
+          CODEX_CLI_SESSION_ID: "codex-cli-1",
           DOREY_AUTO_STOP_IDLE_MS: "1500",
         },
         defaultOptions,
       );
       const keptEnv = buildDoreyServerEnv(
         {
-          CODEX_THREAD_ID: "codex-thread-1",
+          CODEX_CLI_SESSION_ID: "codex-cli-1",
           DOREY_AUTO_STOP_ON_REPLY: "1",
         },
         keptOptions,
@@ -285,7 +315,8 @@ describe("revision agent poll CLI", () => {
     assert.equal(options.command, "launch");
 
     if (options.command === "launch") {
-      assert.equal(options.poll, true);
+      assert.equal(options.deliveryMode, "preview");
+      assert.equal(options.poll, false);
       assert.equal(options.pollOptions, undefined);
       assert.equal(options.autoStop, false);
       assert.equal(options.previewOnly, true);
@@ -767,6 +798,29 @@ describe("revision agent poll CLI", () => {
     );
   });
 
+  it("does not reuse a foreground server for a wake launch", () => {
+    assert.equal(
+      isDoreyServerHealthCompatible(
+        {
+          app: "dorey",
+          deliveryMode: "foreground",
+          launcherContext: {
+            provider: "codex",
+            sessionId: "thread-1",
+            sessionKind: "codex_thread",
+          },
+          workspaceRoot: "/tmp/domain-a",
+        },
+        {
+          deliveryMode: "wake",
+          targetKey: "codex-desktop:thread-1",
+          workspaceRoot: "/tmp/domain-a",
+        },
+      ),
+      false,
+    );
+  });
+
   it("extracts Dorey server processes for stop --all without matching poll clients", () => {
     const processes = parseDoreyServerProcessList(
       [
@@ -805,6 +859,16 @@ describe("revision agent poll CLI", () => {
       buildRevisionAgentPollUrl(options),
       "http://127.0.0.1:5175/api/agent/poll?target=codex-desktop%3Athread-1&timeoutMs=45000",
     );
+  });
+
+  it("parses poll --check as one non-blocking queue check", () => {
+    const options = parseRevisionAgentPollArgs(
+      ["--target", "codex-desktop:thread-1", "--check"],
+      {},
+    );
+
+    assert.equal(options.once, true);
+    assert.equal(options.timeoutMs, 0);
   });
 
   it("prints feedback with enough context for the original agent to reply", () => {

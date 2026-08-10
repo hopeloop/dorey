@@ -103,6 +103,16 @@ describe("revision poll broker", () => {
     }
   });
 
+  it("uses one-shot fallback checks for Codex Desktop targets", () => {
+    const commands = createRevisionPollCommands({
+      baseUrl: "http://127.0.0.1:5175",
+      requestId: "submit-wake",
+      targetKey: "codex-desktop:thread-1",
+    });
+
+    assert.match(commands.agentPollCommand, /^dorey poll --check /);
+  });
+
   it("delivers queued work through poll and exposes completed replies to the browser", async () => {
     const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-poll-broker-"));
 
@@ -216,6 +226,76 @@ describe("revision poll broker", () => {
       });
 
       assert.deepEqual(completedRequestIds, ["submit-auto-stop"]);
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("closes the review lifecycle and wakes non-blocking poll checks", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-close-"));
+
+    try {
+      const broker = createRevisionPollBroker({ payloadRoot });
+
+      assert.deepEqual(broker.getReviewStatus(), { status: "open" });
+      assert.deepEqual(broker.closeReview(), { status: "review_closed" });
+      assert.deepEqual(
+        await broker.poll({ targetKey: "codex-desktop:thread-1", timeoutMs: 0 }),
+        {
+          nextStep: "Dorey review 已结束；停止 heartbeat 或 foreground poll。",
+          status: "review_closed",
+          targetKey: "codex-desktop:thread-1",
+        },
+      );
+      await assert.rejects(
+        broker.enqueue({
+          baseUrl: "http://127.0.0.1:5175",
+          request,
+          target: {
+            key: "codex-desktop:thread-1",
+            label: "Codex Desktop（原对话）",
+            provider: "codex",
+            transport: "codex_desktop",
+          },
+        }),
+        /review is closed/i,
+      );
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps the first completed reply when delivery races", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-idempotent-"));
+
+    try {
+      const broker = createRevisionPollBroker({
+        createId: () => "submit-idempotent",
+        payloadRoot,
+      });
+      await broker.enqueue({
+        baseUrl: "http://127.0.0.1:5175",
+        request,
+        target: {
+          key: "codex-desktop:thread-1",
+          label: "Codex Desktop（原对话）",
+          provider: "codex",
+          transport: "codex_desktop",
+        },
+      });
+      const first = await broker.complete("submit-idempotent", {
+        addressedComments: [],
+        revisedMarkdown: "# first\n",
+        summary: "first",
+      });
+      const second = await broker.complete("submit-idempotent", {
+        addressedComments: [],
+        revisedMarkdown: "# second\n",
+        summary: "second",
+      });
+
+      assert.deepEqual(second, first);
+      assert.equal(broker.getSubmission("submit-idempotent")?.response?.summary, "first");
     } finally {
       await rm(payloadRoot, { force: true, recursive: true });
     }

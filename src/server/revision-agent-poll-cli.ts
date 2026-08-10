@@ -34,6 +34,7 @@ export type RevisionAgentPollOptions = {
 };
 
 export type DoreyLaunchMode = "single-file" | "folder" | "demo";
+export type DoreyDeliveryMode = "foreground" | "preview" | "wake";
 
 export type DoreyLaunchWorkspace = {
   runId: string;
@@ -67,6 +68,7 @@ const launcherTargetEnvKeys = [
 
 export type DoreyHealth = {
   app?: string;
+  deliveryMode?: DoreyDeliveryMode;
   launcherContext?: {
     provider?: string;
     sessionId?: string;
@@ -87,6 +89,7 @@ export type DoreyCliOptions =
       command: "launch";
       host: string;
       intervalMs: number;
+      deliveryMode: DoreyDeliveryMode;
       launchMode: DoreyLaunchMode;
       openBrowser: boolean;
       poll: boolean;
@@ -173,6 +176,12 @@ export function parseRevisionAgentPollArgs(
 
     if (arg === "--once") {
       once = true;
+      continue;
+    }
+
+    if (arg === "--check") {
+      once = true;
+      timeoutMs = 0;
       continue;
     }
 
@@ -271,12 +280,14 @@ export function buildRevisionAgentPollUrl({
 
 export function buildRevisionAgentPollCommand({
   baseUrl,
+  check = false,
   targetKey,
 }: {
   baseUrl: string;
+  check?: boolean;
   targetKey: string;
 }): string {
-  return `dorey poll --base-url ${quoteForShell(normalizeBaseUrl(baseUrl))} --target ${quoteForShell(targetKey)}`;
+  return `dorey poll${check ? " --check" : ""} --base-url ${quoteForShell(normalizeBaseUrl(baseUrl))} --target ${quoteForShell(targetKey)}`;
 }
 
 export function formatRevisionAgentPollFeedback(
@@ -381,8 +392,16 @@ export async function runDoreyCli(
     openBrowser(options.baseUrl, { previewOnly: options.previewOnly });
   }
 
-  if (!options.poll) {
+  if (options.deliveryMode === "preview") {
     process.stderr.write(`${buildNoPollPreviewWarning(options.targetKey)}\n`);
+
+    return 0;
+  }
+
+  if (options.deliveryMode === "wake") {
+    process.stderr.write(
+      `[dorey] Wake bridge armed for ${options.targetKey}. This launch turn can end; Dorey will wake the original Codex task for each submit.\n`,
+    );
 
     return 0;
   }
@@ -422,6 +441,11 @@ export async function runRevisionAgentPollLoop(
       continue;
     }
 
+    if (result.status === "review_closed") {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return 0;
+    }
+
     if (options.once) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return 0;
@@ -445,7 +469,10 @@ function parseDoreyLaunchArgs(
   let intervalMs = numberOption(firstEnv(env, "DOREY_INTERVAL_MS"), defaultIntervalMs);
   let openBrowserFlag = firstEnv(env, "DOREY_NO_OPEN") !== "1";
   let previewRequested = firstEnv(env, "DOREY_PREVIEW") === "1";
-  let poll = !previewRequested;
+  const configuredDeliveryMode = firstEnv(env, "DOREY_DELIVERY_MODE");
+  let requestedDeliveryMode = configuredDeliveryMode
+    ? parseDeliveryMode(configuredDeliveryMode)
+    : undefined;
   let autoStop = firstEnv(env, "DOREY_AUTO_STOP") !== "0" && firstEnv(env, "DOREY_KEEP_SERVER") !== "1";
   let autoStopIdleMs = numberOption(firstEnv(env, "DOREY_AUTO_STOP_IDLE_MS"), defaultAutoStopIdleMs);
   let port = numberOption(firstEnv(env, "DOREY_PORT"), defaultPort);
@@ -532,14 +559,21 @@ function parseDoreyLaunchArgs(
     }
 
     if (arg === "--poll") {
-      poll = true;
+      requestedDeliveryMode = "foreground";
       previewRequested = false;
       continue;
     }
 
     if (arg === "--preview") {
-      poll = false;
+      requestedDeliveryMode = "preview";
       previewRequested = true;
+      continue;
+    }
+
+    if (arg === "--delivery") {
+      requestedDeliveryMode = parseDeliveryMode(requiredValue(argv, index, arg));
+      previewRequested = requestedDeliveryMode === "preview";
+      index += 1;
       continue;
     }
 
@@ -596,11 +630,18 @@ function parseDoreyLaunchArgs(
 
   const workflowRoot =
     launchMode === "demo" ? path.join(workspaceRoot, "workflow-runs") : undefined;
-  const previewOnly = previewRequested || !targetKey;
+  const deliveryMode = resolveDeliveryMode({
+    previewRequested,
+    requestedDeliveryMode,
+    targetKey,
+  });
+  const poll = deliveryMode === "foreground";
+  const previewOnly = deliveryMode === "preview";
 
   return {
     baseUrl,
     command: "launch",
+    deliveryMode,
     host,
     intervalMs,
     launchMode,
@@ -624,7 +665,7 @@ function parseDoreyLaunchArgs(
     timeoutMs,
     workflowRoot,
     workspaceRoot,
-    autoStop: Boolean(poll && targetKey && autoStop),
+    autoStop: Boolean(deliveryMode === "foreground" && targetKey && autoStop),
     autoStopIdleMs,
   };
 }
@@ -1141,7 +1182,8 @@ async function ensureDoreyServer(
 
   if (health) {
     if (isDoreyServerHealthCompatible(health, {
-      targetKey: options.pollOptions?.targetKey,
+      deliveryMode: options.deliveryMode,
+      targetKey: options.targetKey,
       workspaceRoot: options.workspaceRoot,
     })) {
       return {
@@ -1189,13 +1231,21 @@ async function ensureDoreyServer(
 
 export function isDoreyServerHealthCompatible(
   health: DoreyHealth,
-  expected: { targetKey?: string; workspaceRoot: string },
+  expected: {
+    deliveryMode?: DoreyDeliveryMode;
+    targetKey?: string;
+    workspaceRoot: string;
+  },
 ): boolean {
   if (health.app !== "dorey") {
     return false;
   }
 
   if (!health.workspaceRoot || path.resolve(health.workspaceRoot) !== path.resolve(expected.workspaceRoot)) {
+    return false;
+  }
+
+  if (expected.deliveryMode && health.deliveryMode !== expected.deliveryMode) {
     return false;
   }
 
@@ -1535,12 +1585,16 @@ export function buildDoreyServerEnv(
   childEnv.DOREY_WORKSPACE_ROOT = options.workspaceRoot;
   childEnv.AI_CODING_WORKFLOW_ROOT = options.workflowRoot ?? options.workspaceRoot;
   childEnv.DOREY_LAUNCH_MODE = options.launchMode;
+  childEnv.DOREY_DELIVERY_MODE = options.deliveryMode;
   childEnv.DOREY_PREVIEW_ONLY = options.previewOnly ? "1" : "0";
   childEnv.MARKDOWN_REVIEW_BASE_URL = options.baseUrl;
 
   clearLauncherTargetEnv(childEnv);
 
-  for (const [key, value] of Object.entries(targetKeyToServerEnv(options.pollOptions?.targetKey))) {
+  const serverTargetKey =
+    options.deliveryMode === "preview" ? undefined : options.targetKey;
+
+  for (const [key, value] of Object.entries(targetKeyToServerEnv(serverTargetKey))) {
     if (value === undefined) {
       delete childEnv[key];
     } else {
@@ -1548,7 +1602,7 @@ export function buildDoreyServerEnv(
     }
   }
 
-  if (options.pollOptions?.targetKey?.startsWith("traex-cli:")) {
+  if (serverTargetKey?.startsWith("traex-cli:")) {
     delete childEnv.CODEX_THREAD_ID;
     delete childEnv.MARKDOWN_REVIEW_CODEX_THREAD_ID;
   }
@@ -1586,6 +1640,7 @@ export function buildDoreyHelpText(): string {
     "  --port <port>          Web UI port, default 5175.",
     "  --host <host>          Bind host, default 127.0.0.1.",
     "  --target <target>      Poll target, for example codex-desktop:<thread-id> or traex-cli:<session-id>.",
+    "  --delivery <mode>      wake (Codex Desktop default), foreground (CLI default), or preview.",
     "  --no-open              Do not open a browser window.",
     "  --preview              Preview only: do not poll; this agent will not receive review submits.",
     "  --no-auto-stop         Keep a server started by this command until explicitly stopped.",
@@ -1627,10 +1682,38 @@ function firstEnv(env: Env, ...names: string[]): string | undefined {
 
 function helpText(): string {
   return [
-    "Usage: dorey poll [--base-url http://127.0.0.1:5175] [--target <target>] [--once]",
+    "Usage: dorey poll [--base-url http://127.0.0.1:5175] [--target <target>] [--once|--check]",
     "",
-    "Keeps the original agent session waiting for Dorey submits.",
+    "Use --check for one immediate non-blocking queue check; the default keeps waiting.",
   ].join("\n");
+}
+
+function parseDeliveryMode(value: string): DoreyDeliveryMode {
+  if (value === "wake" || value === "foreground" || value === "preview") {
+    return value;
+  }
+
+  throw new Error("Invalid --delivery mode. Use wake, foreground, or preview.");
+}
+
+function resolveDeliveryMode({
+  previewRequested,
+  requestedDeliveryMode,
+  targetKey,
+}: {
+  previewRequested: boolean;
+  requestedDeliveryMode?: DoreyDeliveryMode;
+  targetKey?: string;
+}): DoreyDeliveryMode {
+  if (!targetKey || previewRequested || requestedDeliveryMode === "preview") {
+    return "preview";
+  }
+
+  if (requestedDeliveryMode) {
+    return requestedDeliveryMode;
+  }
+
+  return targetKey.startsWith("codex-desktop:") ? "wake" : "foreground";
 }
 
 function inferAddressFromBaseUrl(baseUrl: string): { host: string; port: number } {

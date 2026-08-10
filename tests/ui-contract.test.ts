@@ -142,6 +142,10 @@ describe("review workspace UI contract", () => {
     assert.match(appSource, /执行可见性/);
     assert.match(appSource, /Codex Desktop（原对话）/);
     assert.match(appSource, /等待原 Agent 会话处理/);
+    assert.match(appSource, /wake bridge 已请求/);
+    assert.match(appSource, /无需保持启动 Dorey 的 turn 或 Bash poll/);
+    assert.match(appSource, /结束评审/);
+    assert.match(appSource, /\/api\/dorey\/review/);
     assert.match(appSource, /配置原会话命令/);
     assert.match(appSource, /Payload 文件/);
     assert.match(appSource, /Raw Poll 命令/);
@@ -163,6 +167,9 @@ describe("review workspace UI contract", () => {
     assert.ok(adapterSelectIndex > agentDetailsIndex);
     assert.ok(sessionContextIndex > agentDetailsIndex);
     assert.match(bootstrapSource, /previewOnly\?: boolean/);
+    assert.match(bootstrapSource, /deliveryMode\?: "wake" \| "foreground" \| "preview"/);
+    assert.match(viteConfig, /runCodexDesktopWake/);
+    assert.match(viteConfig, /createRevisionReviewMiddleware/);
     assert.match(viteConfig, /process\.env\.DOREY_PREVIEW_ONLY === "1" \|\| !launcherContext/);
     assert.match(styles, /\.session-launch-warning\s*{[^}]*border-left:\s*3px solid #d97706;/s);
     assert.match(viteConfig, /codex-desktop\/revise/);

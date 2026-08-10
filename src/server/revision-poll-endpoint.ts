@@ -74,6 +74,10 @@ export type RevisionSubmitTargetResolver = (
 export type AgentRevisionSubmitHandlerOptions = {
   broker?: RevisionPollBroker;
   cwd: string;
+  onQueued?: (input: {
+    request: BatchRevisionRequest;
+    submission: QueuedRevisionSubmission;
+  }) => void;
   targetResolver: RevisionSubmitTargetResolver;
 };
 
@@ -126,13 +130,16 @@ export async function handleAgentRevisionSubmitRequest(
   try {
     const broker = options.broker ?? defaultBroker;
 
+    const submission = await broker.enqueue({
+      baseUrl: req.baseUrl ?? "http://127.0.0.1:5173",
+      request: parsed,
+      target,
+    });
+    options.onQueued?.({ request: parsed, submission });
+
     return {
       status: 200,
-      body: await broker.enqueue({
-        baseUrl: req.baseUrl ?? "http://127.0.0.1:5173",
-        request: parsed,
-        target,
-      }),
+      body: submission,
     };
   } catch (error) {
     return {

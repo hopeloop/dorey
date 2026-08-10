@@ -35,6 +35,13 @@ export type RunCodexDesktopRevisionOptions = {
   timeoutMs?: number;
 };
 
+export type RunCodexDesktopWakeInput = {
+  payloadPath: string;
+  replyCommand: string;
+  request: BatchRevisionRequest;
+  requestId: string;
+};
+
 export type ResolveDefaultCodexDesktopBinInput = {
   env?: Record<string, string | undefined>;
   existsSync?: (path: string) => boolean;
@@ -44,11 +51,29 @@ export type ResolveDefaultCodexDesktopBinInput = {
 type RunCodexAppServerTurnInput = {
   codexBin: string;
   cwd: string;
-  outputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   prompt: string;
   threadId: string;
   timeoutMs: number;
 };
+
+export function buildCodexDesktopWakePrompt({
+  payloadPath,
+  replyCommand,
+  requestId,
+}: Omit<RunCodexDesktopWakeInput, "request">): string {
+  return [
+    "Dorey wake bridge 检测到一条新的 review submit。",
+    "请使用 $dorey-review-loop 处理这一条反馈；这是一次短 turn，不要启动常驻 poll。",
+    "",
+    `requestId: ${requestId}`,
+    `payloadPath: ${payloadPath}`,
+    `replyCommand: ${replyCommand}`,
+    "",
+    "读取 payload，修改原 Markdown，生成完整 BatchRevisionResponse，并 POST 到 replyCommand。",
+    "回复成功后简短报告结果，处理这一条后结束当前 turn。",
+  ].join("\n");
+}
 
 export function resolveCodexDesktopThreadId(
   req: BatchRevisionRequest,
@@ -242,6 +267,25 @@ export async function runCodexDesktopRevision(
   return parseCodexDesktopRevisionOutput(rawOutput.trim());
 }
 
+export async function runCodexDesktopWake(
+  input: RunCodexDesktopWakeInput,
+  options: RunCodexDesktopRevisionOptions,
+): Promise<void> {
+  const threadId = resolveCodexDesktopThreadId(input.request);
+
+  if (!threadId) {
+    throw new Error("Codex Desktop wake requires a Codex Desktop launcher thread id.");
+  }
+
+  await runCodexAppServerTurn({
+    codexBin: options.codexBin ?? resolveDefaultCodexDesktopBin(),
+    cwd: options.cwd,
+    prompt: buildCodexDesktopWakePrompt(input),
+    threadId,
+    timeoutMs: options.timeoutMs ?? 120_000,
+  });
+}
+
 async function runCodexAppServerTurn({
   codexBin,
   cwd,
@@ -382,10 +426,15 @@ async function runCodexAppServerTurn({
 
     for (const message of buildCodexAppServerMessages({
       cwd,
-      outputSchema,
+      outputSchema: outputSchema ?? {},
       prompt,
       threadId,
     })) {
+      if (!outputSchema && message.method === "turn/start" && message.params) {
+        delete message.params.outputSchema;
+        delete message.params.approvalPolicy;
+        delete message.params.sandboxPolicy;
+      }
       child.stdin.write(`${JSON.stringify(message)}\n`, "utf8");
     }
   });

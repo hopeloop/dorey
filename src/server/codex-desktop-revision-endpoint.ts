@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { QueuedRevisionSubmission } from "../contracts/revision.js";
+import type { BatchRevisionRequest } from "../contracts/revision.js";
 import {
   createAgentRevisionSubmitMiddleware,
   handleAgentRevisionSubmitRequest,
@@ -29,14 +30,20 @@ export type CodexDesktopRevisionHttpResponse =
 export type CodexDesktopRevisionHandlerOptions = Omit<
   AgentRevisionSubmitHandlerOptions,
   "targetResolver"
->;
+> & {
+  onWakeError?: (error: unknown) => void;
+  wake?: (input: {
+    request: BatchRevisionRequest;
+    submission: QueuedRevisionSubmission;
+  }) => Promise<void>;
+};
 
 export async function handleCodexDesktopRevisionRequest(
   req: CodexDesktopRevisionHttpRequest,
   options: CodexDesktopRevisionHandlerOptions,
 ): Promise<CodexDesktopRevisionHttpResponse> {
   return await handleAgentRevisionSubmitRequest(req, {
-    ...options,
+    ...buildWakeSubmitOptions(options),
     targetResolver: resolveCodexDesktopPollTarget,
   });
 }
@@ -50,7 +57,24 @@ export function createCodexDesktopRevisionMiddleware(
     next?: (error?: unknown) => void,
   ) =>
     createAgentRevisionSubmitMiddleware({
-      ...options,
+      ...buildWakeSubmitOptions(options),
       targetResolver: resolveCodexDesktopPollTarget,
     })(req, res, next);
+}
+
+function buildWakeSubmitOptions(
+  options: CodexDesktopRevisionHandlerOptions,
+): AgentRevisionSubmitHandlerOptions {
+  const { onWakeError, wake, ...submitOptions } = options;
+
+  return {
+    ...submitOptions,
+    onQueued: wake
+      ? ({ request, submission }) => {
+          submission.message = `已排队给 ${submission.target.label}，并已请求唤醒原 Codex task。`;
+          void wake({ request, submission }).catch((error) => onWakeError?.(error));
+        }
+      : submitOptions.onQueued,
+    targetResolver: resolveCodexDesktopPollTarget,
+  };
 }
