@@ -48,6 +48,17 @@ Demo 模式会在临时目录生成一组内置文档，并在页面内明确提
 
 裸 `dorey` 命令不会启动 UI，也不会扫描目录；它只会打印当前支持的命令和选项。
 
+## 安装 Agent Skill
+
+仓库内提供与当前 wake bridge 协议配套的 `dorey-review-loop` skill。Codex 用户可以安装到个人 skills 目录：
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R skills/dorey-review-loop ~/.codex/skills/
+```
+
+Skill 会指导 Agent 正确选择 `--review-file` / `--review-folder`，在 Codex Desktop 使用 wake bridge，并用 `dorey poll --check` 作为 heartbeat 或故障兜底。
+
 默认地址：
 
 ```text

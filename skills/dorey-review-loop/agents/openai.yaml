@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dorey Review Loop"
+  short_description: "可靠打开 Dorey，用 wake 或前台模式处理多轮评审"
+  default_prompt: "使用 $dorey-review-loop 在 Dorey 中打开这份文档；Codex Desktop 使用 wake bridge，每次处理一条反馈后结束 turn。"
