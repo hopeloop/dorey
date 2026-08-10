@@ -4,6 +4,7 @@ export type ReviewWorkspaceBootstrap = {
   currentAgentProvider?: AgentProvider;
   currentLauncherContext?: LauncherContext;
   currentSessionLabel?: string;
+  deliveryMode?: "wake" | "foreground" | "preview";
   launchMode?: "single-file" | "folder" | "demo";
   previewOnly?: boolean;
 };

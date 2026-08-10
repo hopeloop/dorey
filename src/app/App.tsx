@@ -193,6 +193,7 @@ export function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitStatus, setSubmitStatus] = useState<string | null>(null);
+  const [reviewClosed, setReviewClosed] = useState(false);
   const submitAbortRef = useRef<AbortController | null>(null);
   const markdownRootRef = useRef<HTMLDivElement>(null);
 
@@ -286,6 +287,27 @@ export function App() {
         : undefined,
     [activeExecutionTarget, activeSession],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void fetch("/api/dorey/review")
+      .then(async (response) =>
+        response.ok
+          ? ((await response.json()) as { status?: string })
+          : undefined,
+      )
+      .then((status) => {
+        if (!cancelled && status?.status === "review_closed") {
+          setReviewClosed(true);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -441,6 +463,7 @@ export function App() {
     commentsForArtifact.length > 0 || globalInstruction.trim().length > 0;
   const canSubmit =
     hasSubmitContent &&
+    !reviewClosed &&
     !isSubmitting &&
     pendingSubmission === null &&
     activeSession !== undefined &&
@@ -613,6 +636,19 @@ export function App() {
 
   function cancelSubmit() {
     submitAbortRef.current?.abort();
+  }
+
+  async function closeReview() {
+    const response = await fetch("/api/dorey/review", { method: "POST" });
+
+    if (!response.ok) {
+      setSubmitError(`结束评审失败：${await response.text()}`);
+      return;
+    }
+
+    setReviewClosed(true);
+    setPendingSubmission(null);
+    setSubmitStatus("评审已结束；wake bridge 与 heartbeat 可以停止。");
   }
 
   function startSourceEdit() {
@@ -1061,6 +1097,16 @@ export function App() {
             </button>
             <button
               className="icon-button"
+              disabled={reviewClosed}
+              onClick={() => void closeReview()}
+              title="结束评审并通知 Agent 停止监听"
+              type="button"
+            >
+              <X size={16} aria-hidden="true" />
+              <span>{reviewClosed ? "评审已结束" : "结束评审"}</span>
+            </button>
+            <button
+              className="icon-button"
               onClick={resetDemo}
               title="重置示例"
               type="button"
@@ -1470,17 +1516,27 @@ export function App() {
               <div className="result-header">
                 <div>
                   <h3>等待原 Agent 会话处理</h3>
-                  <p>
-                    已排队到 {pendingSubmission.targetLabel}。请让启动 Workspace
-                    的原 Agent 会话运行配置命令并保持等待；页面只会等待原会话
-                    reply 返回。
-                  </p>
+                  {bootstrap.deliveryMode === "wake" ? (
+                    <p>
+                      已排队到 {pendingSubmission.targetLabel}，wake bridge 已请求
+                      唤醒原 Codex task；无需保持启动 Dorey 的 turn 或 Bash poll。
+                    </p>
+                  ) : (
+                    <p>
+                      已排队到 {pendingSubmission.targetLabel}。foreground 模式下请让
+                      原 Agent 会话运行配置命令并保持等待；页面只等待 reply 返回。
+                    </p>
+                  )}
                 </div>
                 <span className="status-chip">待处理</span>
               </div>
 
               <section className="result-section">
-                <h4>配置原会话命令</h4>
+                <h4>
+                  {bootstrap.deliveryMode === "wake"
+                    ? "Fallback Check 命令"
+                    : "配置原会话命令"}
+                </h4>
                 <code className="command-block">
                   {pendingSubmission.agentPollCommand}
                 </code>

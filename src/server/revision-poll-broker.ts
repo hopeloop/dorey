@@ -46,6 +46,11 @@ export type RevisionPollResult =
       requestId: string;
       status: "feedback";
       target: RevisionPollTarget;
+    }
+  | {
+      nextStep: string;
+      status: "review_closed";
+      targetKey: string;
     };
 
 export type CompletedRevisionSubmission = {
@@ -76,6 +81,7 @@ export function createRevisionPollBroker({
   const events = new EventEmitter();
   const records = new Map<string, RevisionSubmissionRecord>();
   const pendingIdsByTarget = new Map<string, string[]>();
+  let reviewClosed = false;
 
   async function enqueue({
     baseUrl,
@@ -86,6 +92,10 @@ export function createRevisionPollBroker({
     request: BatchRevisionRequest;
     target: RevisionPollTarget;
   }): Promise<QueuedRevisionSubmission> {
+    if (reviewClosed) {
+      throw new Error("Dorey review is closed.");
+    }
+
     const requestId = createId();
     const queuedAt = now();
     const requestDir = path.join(
@@ -145,6 +155,10 @@ export function createRevisionPollBroker({
       return immediate;
     }
 
+    if (reviewClosed) {
+      return reviewClosedResult(targetKey);
+    }
+
     if (timeoutMs <= 0) {
       return waiting(targetKey);
     }
@@ -155,18 +169,18 @@ export function createRevisionPollBroker({
         resolve(waiting(targetKey));
       }, timeoutMs);
       const onFeedback = (changedTargetKey: string) => {
-        if (changedTargetKey !== targetKey) {
+        if (changedTargetKey !== targetKey && changedTargetKey !== "*") {
           return;
         }
 
         const result = takeNext(targetKey);
 
-        if (!result) {
+        if (!result && !reviewClosed) {
           return;
         }
 
         cleanup();
-        resolve(result);
+        resolve(result ?? reviewClosedResult(targetKey));
       };
       const cleanup = () => {
         clearTimeout(timer);
@@ -185,6 +199,14 @@ export function createRevisionPollBroker({
 
     if (!record) {
       throw new Error(`Unknown revision submission: ${requestId}`);
+    }
+
+    if (record.status === "completed" && record.response) {
+      return {
+        requestId,
+        response: record.response,
+        status: "completed",
+      };
     }
 
     record.status = "completed";
@@ -276,9 +298,22 @@ export function createRevisionPollBroker({
     return undefined;
   }
 
+  function closeReview(): { status: "review_closed" } {
+    reviewClosed = true;
+    events.emit(feedbackEvent, "*");
+
+    return { status: "review_closed" };
+  }
+
+  function getReviewStatus(): { status: "open" | "review_closed" } {
+    return { status: reviewClosed ? "review_closed" : "open" };
+  }
+
   return {
+    closeReview,
     complete,
     enqueue,
+    getReviewStatus,
     getSubmission,
     getSubmissionStatus,
     poll,
@@ -316,6 +351,7 @@ export function createRevisionPollCommands({
   return {
     agentPollCommand: buildRevisionAgentPollCommand({
       baseUrl: normalizedBaseUrl,
+      check: targetKey.startsWith("codex-desktop:"),
       targetKey,
     }),
     pollCommand: `curl -sS ${quoteForShell(pollUrl)}`,
@@ -328,6 +364,14 @@ function waiting(targetKey: string): RevisionPollResult {
     nextStep:
       "暂无待处理 Dorey submit。保持当前会话，稍后重新运行 poll 命令即可。",
     status: "waiting",
+    targetKey,
+  };
+}
+
+function reviewClosedResult(targetKey: string): RevisionPollResult {
+  return {
+    nextStep: "Dorey review 已结束；停止 heartbeat 或 foreground poll。",
+    status: "review_closed",
     targetKey,
   };
 }

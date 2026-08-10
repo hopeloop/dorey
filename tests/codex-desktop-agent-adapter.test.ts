@@ -14,6 +14,7 @@ import type {
 import {
   buildCodexDesktopPayload,
   buildCodexDesktopTurnPrompt,
+  buildCodexDesktopWakePrompt,
   buildCodexAppServerMessages,
   parseCodexDesktopRevisionOutput,
   resolveDefaultCodexDesktopBin,
@@ -122,6 +123,22 @@ describe("Codex Desktop thread adapter", () => {
     assert.match(prompt, /revisedMarkdown/);
     assert.doesNotMatch(prompt, /优先复用已有发布链路/);
     assert.doesNotMatch(prompt, /BatchRevisionRequest JSON/);
+  });
+
+  it("builds a one-request wake prompt that ends the resumed turn", () => {
+    const prompt = buildCodexDesktopWakePrompt({
+      payloadPath: "/tmp/review-submit/payload.json",
+      replyCommand:
+        "curl -sS -X POST 'http://127.0.0.1:5175/api/agent/submissions/submit-1/reply' --data-binary @response.json",
+      requestId: "submit-1",
+    });
+
+    assert.match(prompt, /\$dorey-review-loop/);
+    assert.match(prompt, /submit-1/);
+    assert.match(prompt, /\/tmp\/review-submit\/payload\.json/);
+    assert.match(prompt, /api\/agent\/submissions\/submit-1\/reply/);
+    assert.match(prompt, /处理这一条后结束/);
+    assert.doesNotMatch(prompt, /优先复用已有发布链路/);
   });
 
   it("materializes the complete submit payload separately from the thread prompt", () => {
@@ -287,6 +304,43 @@ describe("Codex Desktop thread adapter", () => {
       assert.equal(poll.status, "feedback");
       assert.equal(poll.requestId, "desktop-submit-1");
       assert.equal(poll.status === "feedback" ? poll.request.globalInstruction : "", "first");
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("returns the queued submit immediately and requests a wake for the original task", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "desktop-wake-"));
+    const wakeCalls: unknown[] = [];
+
+    try {
+      const broker = createRevisionPollBroker({
+        createId: () => "desktop-wake-1",
+        payloadRoot,
+      });
+      const result = await handleCodexDesktopRevisionRequest(
+        {
+          baseUrl: "http://127.0.0.1:5175",
+          method: "POST",
+          body: JSON.stringify(request),
+        },
+        {
+          broker,
+          cwd: "/repo",
+          wake: async (input) => {
+            wakeCalls.push(input);
+          },
+        },
+      );
+
+      assert.equal(result.status, 200);
+      assert.match(result.body.message, /已请求唤醒/);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(wakeCalls.length, 1);
+      assert.equal(
+        (wakeCalls[0] as { submission: { requestId: string } }).submission.requestId,
+        "desktop-wake-1",
+      );
     } finally {
       await rm(payloadRoot, { force: true, recursive: true });
     }
