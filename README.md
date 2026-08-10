@@ -3,7 +3,7 @@
 Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档审阅闭环工具。
 
 > [!IMPORTANT]
-> **当前已支持：Codex Desktop、Codex CLI、TraeX CLI。** 其中，Codex Desktop 支持原对话回传，Codex CLI 和 TraeX CLI 支持原会话回传。
+> **当前已支持：Codex Desktop、Codex CLI、TraeX CLI。** 其中，Codex Desktop，Codex CLI 和 TraeX CLI 支持原会话回传。
 >
 > Dorey 的评论提交依赖对应工具的 session adapter 和 `dorey poll`；**Cursor 和 Claude Code 目前均未适配**，无法把评论自动回传到它们的原会话。
 >
