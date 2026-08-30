@@ -20,7 +20,7 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 - 修订结果视图：展示摘要、逐条处理结果、修订 Markdown、渲染态 diff，并支持 `接受` 把修订设为当前版本。
 - 文件与文件夹入口：CLI 显式传入 `--review-file <file>`、`--review-folder <folder>` 或 `--demo`；文件夹模式递归列出 Markdown，并在左侧显示文件树。
 - 本地图片：Markdown 的相对图片路径会从当前文档所在目录解析，并通过 Dorey 的受限图片端点加载。
-- PlantUML 渲染：Markdown 中的 `plantuml` fenced code block 会在编辑器里渲染为 inline SVG，并保留源码展开能力。
+- Mermaid / PlantUML 渲染：Markdown 中的 `mermaid` 和 `plantuml` fenced code block 会在编辑器里渲染为 inline SVG，并保留源码展开与错误回退能力。
 
 ## 安装后启动
 
@@ -233,8 +233,10 @@ runRoot/review/<artifactId>/
 src/app/
   App.tsx                         # 三栏 review workspace
   components/MarkdownDocument.tsx # react-markdown + remark-gfm 渲染
+  components/MermaidDiagram.tsx   # Mermaid inline SVG 渲染
   components/DiffView.tsx         # 渲染态 Markdown diff 视图
   components/PlantUmlDiagram.tsx  # PlantUML inline SVG 渲染
+  mermaid-renderer.ts              # Mermaid 客户端渲染器
   selection.ts                    # 单 block DOM selection anchor
   session-state.ts                # review session、snapshot、run history
   workflow-run-client.ts          # Workflow Run API client

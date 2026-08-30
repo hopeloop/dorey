@@ -458,6 +458,7 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.mermaid-diagram,
 .plantuml-diagram {
   border: 1px solid #d8dee7;
   border-radius: 8px;
@@ -465,6 +466,7 @@ button:disabled {
   overflow: hidden;
 }
 
+.mermaid-toolbar,
 .plantuml-toolbar {
   align-items: center;
   background: #f8fafc;
@@ -477,29 +479,35 @@ button:disabled {
   padding: 8px 10px;
 }
 
+.mermaid-toolbar .text-button,
 .plantuml-toolbar .text-button {
   min-height: 28px;
   padding: 4px 8px;
 }
 
+.mermaid-placeholder,
+.mermaid-error,
 .plantuml-placeholder,
 .plantuml-error {
   margin: 0;
   padding: 18px;
 }
 
+.mermaid-svg,
 .plantuml-svg {
   background: #ffffff;
   overflow: auto;
   padding: 14px;
 }
 
+.mermaid-svg svg,
 .plantuml-svg svg {
   display: block;
   height: auto;
   max-width: 100%;
 }
 
+.mermaid-source,
 .plantuml-source {
   background: #17202a;
   color: #f8fafc;

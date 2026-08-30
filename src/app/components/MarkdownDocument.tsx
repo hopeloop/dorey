@@ -2,6 +2,7 @@ import { Children, isValidElement, memo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { MermaidDiagram } from "./MermaidDiagram";
 import { PlantUmlDiagram } from "./PlantUmlDiagram";
 
 type MarkdownDocumentProps = {
@@ -59,7 +60,10 @@ export const MarkdownDocument = memo(function MarkdownDocument({
     pre: ({ node: _node, children, ...props }) => {
       const child = Children.toArray(children)[0];
 
-      if (isValidElement(child) && child.type === PlantUmlDiagram) {
+      if (
+        isValidElement(child) &&
+        (child.type === MermaidDiagram || child.type === PlantUmlDiagram)
+      ) {
         return child;
       }
 
@@ -70,6 +74,15 @@ export const MarkdownDocument = memo(function MarkdownDocument({
       );
     },
     code: ({ node: _node, className, children, ...props }) => {
+      if (isMermaidCodeBlock(className)) {
+        return (
+          <MermaidDiagram
+            blockId={nextBlockId("mermaid")}
+            source={String(children).replace(/\n$/, "")}
+          />
+        );
+      }
+
       if (isPlantUmlCodeBlock(className)) {
         return (
           <PlantUmlDiagram
@@ -106,6 +119,10 @@ export const MarkdownDocument = memo(function MarkdownDocument({
     </div>
   );
 });
+
+function isMermaidCodeBlock(className?: string): boolean {
+  return Boolean(className?.split(/\s+/).includes("language-mermaid"));
+}
 
 function isPlantUmlCodeBlock(className?: string): boolean {
   return Boolean(

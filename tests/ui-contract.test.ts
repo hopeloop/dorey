@@ -99,6 +99,31 @@ describe("review workspace UI contract", () => {
     assert.match(plantUmlRenderer, /renderQueue/);
   });
 
+  it("renders Mermaid fenced code blocks with a lazy client-side engine", async () => {
+    const packageJson = await readFile("package.json", "utf8");
+    const markdownDocument = await readFile(
+      "src/app/components/MarkdownDocument.tsx",
+      "utf8",
+    );
+    const mermaidDiagram = await readFile(
+      "src/app/components/MermaidDiagram.tsx",
+      "utf8",
+    );
+    const mermaidRenderer = await readFile(
+      "src/app/mermaid-renderer.ts",
+      "utf8",
+    );
+
+    assert.match(packageJson, /"mermaid"/);
+    assert.match(markdownDocument, /MermaidDiagram/);
+    assert.match(markdownDocument, /language-mermaid/);
+    assert.match(mermaidDiagram, /dangerouslySetInnerHTML/);
+    assert.match(mermaidDiagram, /显示源码/);
+    assert.match(mermaidRenderer, /import\("mermaid"\)/);
+    assert.match(mermaidRenderer, /securityLevel: "strict"/);
+    assert.match(mermaidRenderer, /renderQueue/);
+  });
+
   it("keeps long cross-block selections commentable with a document anchor", async () => {
     const markdownDocument = await readFile(
       "src/app/components/MarkdownDocument.tsx",
