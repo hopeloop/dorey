@@ -25,7 +25,20 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 - 本地图片：Markdown 的相对图片路径会从当前文档所在目录解析，并通过 Dorey 的受限图片端点加载。
 - Mermaid / PlantUML 渲染：Markdown 中的 `mermaid` 和 `plantuml` fenced code block 会在编辑器里渲染为 inline SVG，并保留源码展开与错误回退能力。
 
-## 安装后启动
+## 安装
+
+Dorey 通过 GitHub Release 提供可直接安装的 npm tarball。需要本机已经安装 Node.js 22 和 npm：
+
+```bash
+curl -L -o dorey-0.2.0.tgz \
+  https://github.com/hopeloop/dorey/releases/download/v0.2.0/dorey-0.2.0.tgz
+npm install -g ./dorey-0.2.0.tgz
+dorey --help
+```
+
+安装包和版本说明也可以从 [GitHub Releases](https://github.com/hopeloop/dorey/releases) 查看。
+
+## 启动
 
 正常使用时，在 Codex / TraeX 会话所在的工作目录里显式指定要 review 的文档：
 
