@@ -4,9 +4,10 @@ export type ReviewWorkspaceBootstrap = {
   currentAgentProvider?: AgentProvider;
   currentLauncherContext?: LauncherContext;
   currentSessionLabel?: string;
-  deliveryMode?: "wake" | "foreground" | "preview";
+  deliveryMode?: "foreground" | "preview";
   launchMode?: "single-file" | "folder" | "demo";
   previewOnly?: boolean;
+  targetKey?: string;
 };
 
 declare const __REVIEW_WORKSPACE_BOOTSTRAP__:

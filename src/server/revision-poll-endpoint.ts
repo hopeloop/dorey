@@ -5,10 +5,12 @@ import type {
   BatchRevisionRequest,
   BatchRevisionResponse,
   QueuedRevisionSubmission,
+  RevisionSubmissionList,
   RevisionSubmissionStatus,
 } from "../contracts/index.js";
 import {
   createRevisionPollBroker,
+  type RevisionAgentPresence,
   type RevisionPollBroker,
   type RevisionPollResult,
   type RevisionPollTarget,
@@ -34,6 +36,7 @@ export type AgentRevisionSubmitHttpResponse =
 
 export type RevisionPollHttpRequest = {
   method?: string;
+  signal?: AbortSignal;
   url?: string;
 };
 
@@ -49,6 +52,10 @@ export type RevisionPollHttpResponse =
       };
     };
 
+export type RevisionPresenceHttpResponse =
+  | { status: 200; body: RevisionAgentPresence }
+  | { status: 400 | 405; body: { error: string } };
+
 export type RevisionSubmissionHttpRequest = {
   body?: string;
   method?: string;
@@ -58,7 +65,11 @@ export type RevisionSubmissionHttpRequest = {
 export type RevisionSubmissionHttpResponse =
   | {
       status: 200;
-      body: RevisionSubmissionStatus | { requestId: string; status: "completed" };
+      body:
+        | RevisionSubmissionList
+        | RevisionSubmissionStatus
+        | { acknowledgedAt: string; requestId: string; status: "acknowledged" }
+        | { requestId: string; status: "completed" };
     }
   | {
       status: 400 | 404 | 405 | 500;
@@ -164,6 +175,7 @@ export async function handleRevisionPollRequest(
 
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const targetKey = url.searchParams.get("target")?.trim();
+  const clientId = url.searchParams.get("clientId")?.trim() || undefined;
 
   if (!targetKey) {
     return {
@@ -179,7 +191,32 @@ export async function handleRevisionPollRequest(
 
   return {
     status: 200,
-    body: await (options.broker ?? defaultBroker).poll({ targetKey, timeoutMs }),
+    body: await (options.broker ?? defaultBroker).poll({
+      clientId,
+      signal: req.signal,
+      targetKey,
+      timeoutMs,
+    }),
+  };
+}
+
+export async function handleRevisionPresenceRequest(
+  req: RevisionPollHttpRequest,
+  options: RevisionPollHandlerOptions = {},
+): Promise<RevisionPresenceHttpResponse> {
+  if (req.method !== "GET") {
+    return { status: 405, body: { error: "Method not allowed." } };
+  }
+
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  const targetKey = url.searchParams.get("target")?.trim();
+  if (!targetKey) {
+    return { status: 400, body: { error: "Missing presence target." } };
+  }
+
+  return {
+    status: 200,
+    body: await (options.broker ?? defaultBroker).getAgentPresence(targetKey),
   };
 }
 
@@ -197,6 +234,21 @@ export async function handleRevisionSubmissionRequest(
   }
 
   const broker = options.broker ?? defaultBroker;
+
+  if (req.method === "GET" && parsedPath.action === "list") {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") ?? 20) || 20, 100));
+    return {
+      status: 200,
+      body: {
+        submissions: broker.listSubmissionStatuses({
+          limit,
+          targetKey: url.searchParams.get("target")?.trim() || undefined,
+          unacknowledgedOnly: url.searchParams.get("unacknowledged") === "1",
+        }),
+      },
+    };
+  }
 
   if (req.method === "GET" && parsedPath.action === "status") {
     const status = broker.getSubmissionStatus(parsedPath.requestId);
@@ -253,6 +305,18 @@ export async function handleRevisionSubmissionRequest(
     }
   }
 
+  if (req.method === "POST" && parsedPath.action === "acknowledge") {
+    try {
+      const acknowledged = await broker.acknowledge(parsedPath.requestId);
+      return { status: 200, body: { ...acknowledged, status: "acknowledged" } };
+    } catch (error) {
+      return {
+        status: 400,
+        body: { error: error instanceof Error ? error.message : String(error) },
+      };
+    }
+  }
+
   return {
     status: 405,
     body: { error: "Method not allowed." },
@@ -292,15 +356,55 @@ export function createRevisionPollMiddleware(
     res: ServerResponse,
     next?: (error?: unknown) => void,
   ) => {
+    const broker = options.broker ?? defaultBroker;
+    const abortController = new AbortController();
+    let deliveredRequestId: string | undefined;
+    const onResponseClose = () => {
+      abortController.abort();
+      if (deliveredRequestId && !res.writableFinished) {
+        void broker.release(deliveredRequestId).catch(() => undefined);
+      }
+    };
+    res.once("close", onResponseClose);
+
     try {
       const result = await handleRevisionPollRequest(
         {
           method: req.method,
+          signal: abortController.signal,
           url: req.url,
         },
-        options,
+        { broker },
       );
 
+      if (result.status === 200 && result.body.status === "feedback") {
+        deliveredRequestId = result.body.requestId;
+      }
+      if (res.destroyed) {
+        if (deliveredRequestId) await broker.release(deliveredRequestId);
+        return;
+      }
+      writeJson(res, result.status, result.body);
+    } catch (error) {
+      if (deliveredRequestId) await broker.release(deliveredRequestId).catch(() => undefined);
+      next?.(error);
+    }
+  };
+}
+
+export function createRevisionPresenceMiddleware(
+  options: RevisionPollHandlerOptions = {},
+) {
+  return async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    next?: (error?: unknown) => void,
+  ) => {
+    try {
+      const result = await handleRevisionPresenceRequest(
+        { method: req.method, url: req.url },
+        options,
+      );
       writeJson(res, result.status, result.body);
     } catch (error) {
       next?.(error);
@@ -427,9 +531,14 @@ function resolveLauncherThreadId(
 
 function parseSubmissionPath(
   rawUrl: string,
-): { action: "reply" | "status"; requestId: string } | undefined {
+):
+  | { action: "list" }
+  | { action: "acknowledge" | "reply" | "status"; requestId: string }
+  | undefined {
   const url = new URL(rawUrl, "http://127.0.0.1");
   const parts = url.pathname.split("/").filter(Boolean);
+
+  if (parts.length === 0) return { action: "list" };
 
   if (parts.length === 1) {
     return {
@@ -441,6 +550,13 @@ function parseSubmissionPath(
   if (parts.length === 2 && parts[1] === "reply") {
     return {
       action: "reply",
+      requestId: decodeURIComponent(parts[0] ?? ""),
+    };
+  }
+
+  if (parts.length === 2 && parts[1] === "acknowledge") {
+    return {
+      action: "acknowledge",
       requestId: decodeURIComponent(parts[0] ?? ""),
     };
   }

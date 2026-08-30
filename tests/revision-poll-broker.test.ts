@@ -14,7 +14,10 @@ import {
   createRevisionPollBroker,
   createRevisionPollCommands,
 } from "../src/server/revision-poll-broker.js";
-import { resolveTraexCliPollTarget } from "../src/server/revision-poll-endpoint.js";
+import {
+  handleRevisionSubmissionRequest,
+  resolveTraexCliPollTarget,
+} from "../src/server/revision-poll-endpoint.js";
 
 const artifact: Artifact = {
   id: "technical-design",
@@ -103,14 +106,15 @@ describe("revision poll broker", () => {
     }
   });
 
-  it("uses one-shot fallback checks for Codex Desktop targets", () => {
+  it("uses foreground polling for Codex Desktop targets", () => {
     const commands = createRevisionPollCommands({
       baseUrl: "http://127.0.0.1:5175",
-      requestId: "submit-wake",
+      requestId: "submit-foreground",
       targetKey: "codex-desktop:thread-1",
     });
 
-    assert.match(commands.agentPollCommand, /^dorey poll --check /);
+    assert.match(commands.agentPollCommand, /^dorey poll /);
+    assert.doesNotMatch(commands.agentPollCommand, /--check/);
   });
 
   it("delivers queued work through poll and exposes completed replies to the browser", async () => {
@@ -231,22 +235,34 @@ describe("revision poll broker", () => {
     }
   });
 
-  it("closes the review lifecycle and wakes non-blocking poll checks", async () => {
+  it("closes the review lifecycle and resolves attached poll checks", async () => {
     const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-close-"));
 
     try {
       const broker = createRevisionPollBroker({ payloadRoot });
 
+      await broker.enqueue({
+        baseUrl: "http://127.0.0.1:5175",
+        request,
+        target: {
+          key: "codex-desktop:thread-1",
+          label: "Codex Desktop（原对话）",
+          provider: "codex",
+          transport: "codex_desktop",
+        },
+      });
+
       assert.deepEqual(broker.getReviewStatus(), { status: "open" });
-      assert.deepEqual(broker.closeReview(), { status: "review_closed" });
+      assert.deepEqual(await broker.closeReview(), { status: "review_closed" });
       assert.deepEqual(
         await broker.poll({ targetKey: "codex-desktop:thread-1", timeoutMs: 0 }),
         {
-          nextStep: "Dorey review 已结束；停止 heartbeat 或 foreground poll。",
+          nextStep: "Dorey review 已结束；停止 foreground poll。",
           status: "review_closed",
           targetKey: "codex-desktop:thread-1",
         },
       );
+      assert.equal(broker.getSubmissionStatus(broker.listSubmissionStatuses()[0]!.requestId)?.status, "queued");
       await assert.rejects(
         broker.enqueue({
           baseUrl: "http://127.0.0.1:5175",
@@ -259,6 +275,113 @@ describe("revision poll broker", () => {
           },
         }),
         /review is closed/i,
+      );
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("lists and acknowledges completed submissions for one-time UI recovery", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-ack-"));
+
+    try {
+      const broker = createRevisionPollBroker({
+        createId: () => "submit-ack",
+        now: () => "2026-07-05T12:30:00.000Z",
+        payloadRoot,
+      });
+      await broker.enqueue({
+        baseUrl: "http://127.0.0.1:5175",
+        request,
+        target: {
+          key: "codex-desktop:thread-1",
+          label: "Codex Desktop（原对话）",
+          provider: "codex",
+          transport: "codex_desktop",
+        },
+      });
+      await broker.complete("submit-ack", {
+        addressedComments: [],
+        revisedMarkdown: "# revised\n",
+        summary: "revised",
+      });
+
+      const unacknowledged = broker.listSubmissionStatuses({
+        targetKey: "codex-desktop:thread-1",
+        unacknowledgedOnly: true,
+      });
+      assert.equal(unacknowledged.length, 1);
+      assert.deepEqual(unacknowledged[0]?.request, request);
+      assert.equal(unacknowledged[0]?.acknowledgedAt, undefined);
+
+      const listed = await handleRevisionSubmissionRequest(
+        {
+          method: "GET",
+          url: "/?target=codex-desktop%3Athread-1&unacknowledged=1&limit=1",
+        },
+        { broker },
+      );
+      assert.equal(listed.status, 200);
+      assert.equal(
+        "submissions" in listed.body ? listed.body.submissions[0]?.requestId : "",
+        "submit-ack",
+      );
+
+      const acknowledged = await handleRevisionSubmissionRequest(
+        { method: "POST", url: "/submit-ack/acknowledge" },
+        { broker },
+      );
+      assert.equal(acknowledged.status, 200);
+      assert.equal(
+        "requestId" in acknowledged.body ? acknowledged.body.requestId : "",
+        "submit-ack",
+      );
+      assert.equal(
+        broker.listSubmissionStatuses({ unacknowledgedOnly: true }).length,
+        0,
+      );
+      assert.equal(
+        broker.getSubmissionStatus("submit-ack")?.acknowledgedAt,
+        "2026-07-05T12:30:00.000Z",
+      );
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("allows an already delivered request to reply after review close", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-close-inflight-"));
+
+    try {
+      const broker = createRevisionPollBroker({
+        createId: () => "submit-inflight",
+        payloadRoot,
+      });
+      await broker.enqueue({
+        baseUrl: "http://127.0.0.1:5175",
+        request,
+        target: {
+          key: "codex-desktop:thread-1",
+          label: "Codex Desktop（原对话）",
+          provider: "codex",
+          transport: "codex_desktop",
+        },
+      });
+      assert.equal(
+        (await broker.poll({ targetKey: "codex-desktop:thread-1" })).status,
+        "feedback",
+      );
+      await broker.closeReview();
+
+      const completed = await broker.complete("submit-inflight", {
+        addressedComments: [],
+        revisedMarkdown: "# completed after close\n",
+        summary: "completed after close",
+      });
+      assert.equal(completed.status, "completed");
+      assert.equal(
+        (await broker.poll({ targetKey: "codex-desktop:thread-1" })).status,
+        "review_closed",
       );
     } finally {
       await rm(payloadRoot, { force: true, recursive: true });
@@ -296,6 +419,202 @@ describe("revision poll broker", () => {
 
       assert.deepEqual(second, first);
       assert.equal(broker.getSubmission("submit-idempotent")?.response?.summary, "first");
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("restores queued submissions after the broker process restarts", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-persisted-"));
+
+    try {
+      const firstBroker = createRevisionPollBroker({
+        createId: () => "submit-persisted",
+        payloadRoot,
+      });
+      await firstBroker.enqueue({
+        baseUrl: "http://127.0.0.1:5175",
+        request,
+        target: {
+          key: "codex-desktop:thread-1",
+          label: "Codex Desktop（原对话）",
+          provider: "codex",
+          transport: "codex_desktop",
+        },
+      });
+
+      const restoredBroker = createRevisionPollBroker({ payloadRoot });
+      assert.equal(restoredBroker.getSubmission("submit-persisted")?.status, "queued");
+      const poll = await restoredBroker.poll({
+        targetKey: "codex-desktop:thread-1",
+        timeoutMs: 0,
+      });
+      assert.equal(poll.status, "feedback");
+      assert.equal(poll.status === "feedback" ? poll.requestId : "", "submit-persisted");
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("requeues a leased submission when delivery is released", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-release-"));
+
+    try {
+      const broker = createRevisionPollBroker({
+        createId: () => "submit-release",
+        payloadRoot,
+      });
+      await broker.enqueue({
+        baseUrl: "http://127.0.0.1:5175",
+        request,
+        target: {
+          key: "codex-desktop:thread-1",
+          label: "Codex Desktop（原对话）",
+          provider: "codex",
+          transport: "codex_desktop",
+        },
+      });
+
+      assert.equal(
+        (await broker.poll({ targetKey: "codex-desktop:thread-1" })).status,
+        "feedback",
+      );
+      assert.equal((await broker.getAgentPresence("codex-desktop:thread-1")).state, "working");
+      assert.equal(await broker.release("submit-release"), true);
+      assert.equal(broker.getSubmission("submit-release")?.status, "queued");
+      assert.equal(
+        (await broker.poll({ targetKey: "codex-desktop:thread-1" })).status,
+        "feedback",
+      );
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("reclaims an expired delivery lease", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-lease-"));
+    let currentTime = 1_000;
+
+    try {
+      const broker = createRevisionPollBroker({
+        clock: () => currentTime,
+        createId: () => "submit-lease",
+        leaseDurationMs: 100,
+        payloadRoot,
+      });
+      await broker.enqueue({
+        baseUrl: "http://127.0.0.1:5175",
+        request,
+        target: {
+          key: "traex-cli:traex-session-1",
+          label: "TraeX CLI（原会话）",
+          provider: "traex",
+          transport: "traex_cli",
+        },
+      });
+
+      assert.equal(
+        (await broker.poll({ targetKey: "traex-cli:traex-session-1" })).status,
+        "feedback",
+      );
+      currentTime = 1_101;
+      const reclaimed = await broker.poll({
+        targetKey: "traex-cli:traex-session-1",
+        timeoutMs: 0,
+      });
+      assert.equal(reclaimed.status, "feedback");
+      assert.equal(reclaimed.status === "feedback" ? reclaimed.requestId : "", "submit-lease");
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("renews leases owned by the same foreground poll client", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-lease-renew-"));
+    let currentTime = 1_000;
+
+    try {
+      const broker = createRevisionPollBroker({
+        clock: () => currentTime,
+        createId: () => "submit-lease-renew",
+        leaseDurationMs: 100,
+        payloadRoot,
+      });
+      await broker.enqueue({
+        baseUrl: "http://127.0.0.1:5175",
+        request,
+        target: {
+          key: "codex-desktop:thread-1",
+          label: "Codex Desktop（原对话）",
+          provider: "codex",
+          transport: "codex_desktop",
+        },
+      });
+
+      assert.equal(
+        (
+          await broker.poll({
+            clientId: "foreground-worker-1",
+            targetKey: "codex-desktop:thread-1",
+          })
+        ).status,
+        "feedback",
+      );
+
+      currentTime = 1_090;
+      assert.equal(
+        (
+          await broker.poll({
+            clientId: "foreground-worker-1",
+            targetKey: "codex-desktop:thread-1",
+          })
+        ).status,
+        "waiting",
+      );
+
+      currentTime = 1_150;
+      assert.equal(
+        (
+          await broker.poll({
+            clientId: "another-worker",
+            targetKey: "codex-desktop:thread-1",
+          })
+        ).status,
+        "waiting",
+      );
+
+      currentTime = 1_191;
+      const reclaimed = await broker.poll({
+        clientId: "another-worker",
+        targetKey: "codex-desktop:thread-1",
+      });
+      assert.equal(reclaimed.status, "feedback");
+      assert.equal(
+        reclaimed.status === "feedback" ? reclaimed.requestId : "",
+        "submit-lease-renew",
+      );
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("reports listening presence only while a long poll is attached", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-presence-"));
+    const abortController = new AbortController();
+
+    try {
+      const broker = createRevisionPollBroker({ payloadRoot });
+      const pendingPoll = broker.poll({
+        signal: abortController.signal,
+        targetKey: "codex-desktop:thread-1",
+        timeoutMs: 5_000,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal((await broker.getAgentPresence("codex-desktop:thread-1")).state, "listening");
+      abortController.abort();
+      assert.equal((await pendingPoll).status, "waiting");
+      assert.equal((await broker.getAgentPresence("codex-desktop:thread-1")).state, "waiting");
     } finally {
       await rm(payloadRoot, { force: true, recursive: true });
     }

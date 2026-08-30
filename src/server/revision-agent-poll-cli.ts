@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, open, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,6 +27,7 @@ import { resolveMarkdownAssetPath } from "../shared/markdown-document.js";
 
 export type RevisionAgentPollOptions = {
   baseUrl: string;
+  clientId: string;
   intervalMs: number;
   once: boolean;
   targetKey: string;
@@ -34,7 +35,7 @@ export type RevisionAgentPollOptions = {
 };
 
 export type DoreyLaunchMode = "single-file" | "folder" | "demo";
-export type DoreyDeliveryMode = "foreground" | "preview" | "wake";
+export type DoreyDeliveryMode = "foreground" | "preview";
 
 export type DoreyLaunchWorkspace = {
   runId: string;
@@ -75,6 +76,8 @@ export type DoreyHealth = {
     sessionKind?: string;
   };
   previewOnly?: boolean;
+  serverLogPath?: string;
+  stateRoot?: string;
   workspaceRoot?: string;
 };
 
@@ -89,6 +92,7 @@ export type DoreyCliOptions =
       command: "launch";
       host: string;
       intervalMs: number;
+      launcherCwd: string;
       deliveryMode: DoreyDeliveryMode;
       launchMode: DoreyLaunchMode;
       openBrowser: boolean;
@@ -98,6 +102,7 @@ export type DoreyCliOptions =
       port: number;
       reviewFilePath?: string;
       reviewFolderPath?: string;
+      stateRoot: string;
       targetKey?: string;
       timeoutMs: number;
       workflowRoot?: string;
@@ -207,6 +212,7 @@ export function parseRevisionAgentPollArgs(
 
   return {
     baseUrl: normalizeBaseUrl(baseUrl),
+    clientId: createPollClientId(env),
     intervalMs,
     once,
     targetKey,
@@ -270,12 +276,13 @@ export function parseDoreyCliArgs(
 
 export function buildRevisionAgentPollUrl({
   baseUrl,
+  clientId,
   targetKey,
   timeoutMs,
-}: Pick<RevisionAgentPollOptions, "baseUrl" | "targetKey" | "timeoutMs">): string {
+}: Pick<RevisionAgentPollOptions, "baseUrl" | "clientId" | "targetKey" | "timeoutMs">): string {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
 
-  return `${normalizedBaseUrl}/api/agent/poll?target=${encodeURIComponent(targetKey)}&timeoutMs=${encodeURIComponent(String(timeoutMs))}`;
+  return `${normalizedBaseUrl}/api/agent/poll?target=${encodeURIComponent(targetKey)}&timeoutMs=${encodeURIComponent(String(timeoutMs))}&clientId=${encodeURIComponent(clientId)}`;
 }
 
 export function buildRevisionAgentPollCommand({
@@ -379,14 +386,23 @@ export async function runDoreyCli(
   }
 
   const launchWorkspace = await prepareDoreyLaunchWorkspace(options);
+  const stateRoot = options.previewOnly
+    ? path.join(launchWorkspace.workspaceRoot, ".local", "markdown-review-submits")
+    : options.stateRoot;
+  if (!options.previewOnly) await archiveClosedDoreyState(stateRoot);
   const launchOptions = {
     ...options,
+    stateRoot,
     workflowRoot: launchWorkspace.workflowRoot,
     workspaceRoot: launchWorkspace.workspaceRoot,
   };
 
   await ensureDoreyServer(launchOptions, env);
   process.stderr.write(`[dorey] Web UI: ${options.baseUrl}/\n`);
+  process.stderr.write(
+    `[dorey] Server log: ${path.join(launchOptions.workspaceRoot, ".local", "dorey", "server.log")}\n`,
+  );
+  if (!options.previewOnly) process.stderr.write(`[dorey] Durable queue: ${stateRoot}\n`);
 
   if (options.openBrowser) {
     openBrowser(options.baseUrl, { previewOnly: options.previewOnly });
@@ -394,14 +410,6 @@ export async function runDoreyCli(
 
   if (options.deliveryMode === "preview") {
     process.stderr.write(`${buildNoPollPreviewWarning(options.targetKey)}\n`);
-
-    return 0;
-  }
-
-  if (options.deliveryMode === "wake") {
-    process.stderr.write(
-      `[dorey] Wake bridge armed for ${options.targetKey}. This launch turn can end; Dorey will wake the original Codex task for each submit.\n`,
-    );
 
     return 0;
   }
@@ -463,6 +471,7 @@ function parseDoreyLaunchArgs(
   env: Env,
   cwd: string,
 ): DoreyCliOptions {
+  const launcherCwd = path.resolve(cwd);
   let baseUrlOverride = firstEnv(env, "DOREY_BASE_URL", "MARKDOWN_REVIEW_BASE_URL");
   let host = firstEnv(env, "DOREY_HOST") ?? defaultHost;
   let hostWasExplicit = false;
@@ -637,6 +646,15 @@ function parseDoreyLaunchArgs(
   });
   const poll = deliveryMode === "foreground";
   const previewOnly = deliveryMode === "preview";
+  const stateRoot = resolveDoreyStateRoot({
+    env,
+    launchMode,
+    launcherCwd,
+    port,
+    reviewFilePath,
+    reviewFolderPath,
+    targetKey,
+  });
 
   return {
     baseUrl,
@@ -644,6 +662,7 @@ function parseDoreyLaunchArgs(
     deliveryMode,
     host,
     intervalMs,
+    launcherCwd,
     launchMode,
     openBrowser: openBrowserFlag,
     poll,
@@ -651,6 +670,7 @@ function parseDoreyLaunchArgs(
       poll && targetKey
         ? {
             baseUrl,
+            clientId: createPollClientId(env),
             intervalMs,
             once: false,
             targetKey,
@@ -661,6 +681,7 @@ function parseDoreyLaunchArgs(
     port,
     reviewFilePath,
     reviewFolderPath,
+    stateRoot,
     targetKey,
     timeoutMs,
     workflowRoot,
@@ -1201,26 +1222,33 @@ async function ensureDoreyServer(
 
   const childEnv = buildDoreyServerEnv(env, options);
   const entrypoint = resolveEntrypoint(process.argv[1] ?? fileURLToPath(import.meta.url));
-  const child = spawn(
-    process.execPath,
-    [
-      entrypoint,
-      "server",
-      "--host",
-      options.host,
-      "--port",
-      String(options.port),
-      "--workspace-root",
-      options.workspaceRoot,
-    ],
-    {
-      detached: true,
-      env: childEnv,
-      stdio: "ignore",
-    },
-  );
-
-  child.unref();
+  const logDir = path.join(options.workspaceRoot, ".local", "dorey");
+  const logPath = path.join(logDir, "server.log");
+  await mkdir(logDir, { recursive: true });
+  const logHandle = await open(logPath, "a");
+  try {
+    const child = spawn(
+      process.execPath,
+      [
+        entrypoint,
+        "server",
+        "--host",
+        options.host,
+        "--port",
+        String(options.port),
+        "--workspace-root",
+        options.workspaceRoot,
+      ],
+      {
+        detached: true,
+        env: childEnv,
+        stdio: ["ignore", logHandle.fd, logHandle.fd],
+      },
+    );
+    child.unref();
+  } finally {
+    await logHandle.close();
+  }
   await waitForDoreyServer(options.baseUrl);
 
   return {
@@ -1583,6 +1611,8 @@ export function buildDoreyServerEnv(
   childEnv.DOREY_HOST = options.host;
   childEnv.DOREY_PORT = String(options.port);
   childEnv.DOREY_WORKSPACE_ROOT = options.workspaceRoot;
+  childEnv.DOREY_LAUNCHER_CWD = options.launcherCwd;
+  childEnv.DOREY_STATE_ROOT = options.stateRoot;
   childEnv.AI_CODING_WORKFLOW_ROOT = options.workflowRoot ?? options.workspaceRoot;
   childEnv.DOREY_LAUNCH_MODE = options.launchMode;
   childEnv.DOREY_DELIVERY_MODE = options.deliveryMode;
@@ -1640,7 +1670,7 @@ export function buildDoreyHelpText(): string {
     "  --port <port>          Web UI port, default 5175.",
     "  --host <host>          Bind host, default 127.0.0.1.",
     "  --target <target>      Poll target, for example codex-desktop:<thread-id> or traex-cli:<session-id>.",
-    "  --delivery <mode>      wake (Codex Desktop default), foreground (CLI default), or preview.",
+    "  --delivery <mode>      foreground (interactive default) or preview.",
     "  --no-open              Do not open a browser window.",
     "  --preview              Preview only: do not poll; this agent will not receive review submits.",
     "  --no-auto-stop         Keep a server started by this command until explicitly stopped.",
@@ -1680,6 +1710,67 @@ function firstEnv(env: Env, ...names: string[]): string | undefined {
   return undefined;
 }
 
+function createPollClientId(env: Env): string {
+  return (
+    firstEnv(env, "DOREY_POLL_CLIENT_ID", "MARKDOWN_REVIEW_POLL_CLIENT_ID") ??
+    globalThis.crypto?.randomUUID?.() ??
+    `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+}
+
+export function resolveDoreyStateRoot({
+  env,
+  launchMode,
+  launcherCwd,
+  port,
+  reviewFilePath,
+  reviewFolderPath,
+  targetKey,
+}: {
+  env: Env;
+  launchMode: DoreyLaunchMode;
+  launcherCwd: string;
+  port: number;
+  reviewFilePath?: string;
+  reviewFolderPath?: string;
+  targetKey?: string;
+}): string {
+  const configuredRoot = firstEnv(env, "DOREY_STATE_ROOT");
+  if (configuredRoot) return path.resolve(launcherCwd, configuredRoot);
+
+  const source = reviewFilePath ?? reviewFolderPath ?? launchMode;
+  const namespace = createHash("sha256")
+    .update(`${source}:${targetKey ?? "preview"}:${port}`)
+    .digest("hex")
+    .slice(0, 16);
+  return path.join(launcherCwd, ".local", "dorey-submissions", namespace, "active");
+}
+
+export async function archiveClosedDoreyState(stateRoot: string): Promise<string | undefined> {
+  const statePath = path.join(stateRoot, "revision-poll-state.json");
+  let state: { reviewClosed?: unknown };
+  try {
+    state = JSON.parse(await readFile(statePath, "utf8")) as { reviewClosed?: unknown };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(
+      `Could not inspect Dorey queue state at ${statePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (state.reviewClosed !== true) return undefined;
+
+  const namespaceRoot = path.dirname(stateRoot);
+  const archiveRoot = path.join(namespaceRoot, "archive");
+  const archivePath = path.join(
+    archiveRoot,
+    new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-"),
+  );
+  await mkdir(archiveRoot, { recursive: true });
+  await rename(stateRoot, archivePath);
+  return archivePath;
+}
+
 function helpText(): string {
   return [
     "Usage: dorey poll [--base-url http://127.0.0.1:5175] [--target <target>] [--once|--check]",
@@ -1689,11 +1780,11 @@ function helpText(): string {
 }
 
 function parseDeliveryMode(value: string): DoreyDeliveryMode {
-  if (value === "wake" || value === "foreground" || value === "preview") {
+  if (value === "foreground" || value === "preview") {
     return value;
   }
 
-  throw new Error("Invalid --delivery mode. Use wake, foreground, or preview.");
+  throw new Error("Invalid --delivery mode. Use foreground or preview.");
 }
 
 function resolveDeliveryMode({
@@ -1713,7 +1804,7 @@ function resolveDeliveryMode({
     return requestedDeliveryMode;
   }
 
-  return targetKey.startsWith("codex-desktop:") ? "wake" : "foreground";
+  return "foreground";
 }
 
 function inferAddressFromBaseUrl(baseUrl: string): { host: string; port: number } {

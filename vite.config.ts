@@ -3,11 +3,11 @@ import path from "node:path";
 import { defineConfig } from "vite";
 
 import { createCodexDesktopRevisionMiddleware } from "./src/server/codex-desktop-revision-endpoint.js";
-import { runCodexDesktopWake } from "./src/server/codex-desktop-adapter.js";
 import { createCodexRevisionMiddleware } from "./src/server/codex-revision-endpoint.js";
 import { createTraexRevisionMiddleware } from "./src/server/traex-revision-endpoint.js";
 import { createRevisionPollBroker } from "./src/server/revision-poll-broker.js";
 import {
+  createRevisionPresenceMiddleware,
   createRevisionPollMiddleware,
   createRevisionSubmissionMiddleware,
 } from "./src/server/revision-poll-endpoint.js";
@@ -17,16 +17,27 @@ import type {
   DoreyDeliveryMode,
   DoreyLaunchMode,
 } from "./src/server/revision-agent-poll-cli.js";
-import { resolveLauncherContextFromEnv } from "./src/server/launcher-context.js";
+import {
+  launcherContextToTargetKey,
+  resolveLauncherContextFromEnv,
+} from "./src/server/launcher-context.js";
 import { createWorkflowRunMiddleware } from "./src/server/workflow-run-endpoint.js";
 import { resolveWorkflowRoot } from "./src/server/workflow-root.js";
 
 const defaultAutoStopIdleMs = 1_800_000;
 const launcherContext = resolveLauncherContextFromEnv(process.env);
+const launcherTargetKey = launcherContext
+  ? launcherContextToTargetKey(launcherContext)
+  : undefined;
 const launchMode = parseDoreyLaunchMode(process.env.DOREY_LAUNCH_MODE);
 const deliveryMode = parseDoreyDeliveryMode(process.env.DOREY_DELIVERY_MODE);
 const previewOnly = process.env.DOREY_PREVIEW_ONLY === "1" || !launcherContext;
 const workspaceRoot = path.resolve(process.env.DOREY_WORKSPACE_ROOT?.trim() || process.cwd());
+const serverLogPath = path.join(workspaceRoot, ".local", "dorey", "server.log");
+const stateRoot = path.resolve(
+  process.env.DOREY_STATE_ROOT?.trim() ||
+    path.join(workspaceRoot, ".local", "markdown-review-submits"),
+);
 const workflowRootResolution = resolveWorkflowRoot({
   configuredRoot: process.env.AI_CODING_WORKFLOW_ROOT,
   workspaceRoot,
@@ -44,7 +55,7 @@ const revisionPollBroker = createRevisionPollBroker({
   onFeedbackDelivered: (record) => {
     onRevisionFeedbackDelivered?.(record);
   },
-  payloadRoot: path.join(workspaceRoot, ".local", "markdown-review-submits"),
+  payloadRoot: stateRoot,
 });
 
 export default defineConfig({
@@ -56,6 +67,8 @@ export default defineConfig({
       deliveryMode,
       launchMode,
       previewOnly,
+      stateRoot,
+      targetKey: launcherTargetKey,
     }),
   },
   plugins: [
@@ -103,6 +116,9 @@ export default defineConfig({
               launchMode,
               launcherContext,
               previewOnly,
+              serverLogPath,
+              stateRoot,
+              targetKey: launcherTargetKey,
               workspaceRoot,
               workflowRoot,
               autoStopAfterReply,
@@ -143,6 +159,10 @@ export default defineConfig({
           createWorkflowRunMiddleware({ root: workflowRoot }),
         );
         server.middlewares.use(
+          "/api/agent/presence",
+          createRevisionPresenceMiddleware({ broker: revisionPollBroker }),
+        );
+        server.middlewares.use(
           "/api/agent/poll",
           createRevisionPollMiddleware({ broker: revisionPollBroker }),
         );
@@ -162,25 +182,6 @@ export default defineConfig({
           createCodexDesktopRevisionMiddleware({
             broker: revisionPollBroker,
             cwd: workspaceRoot,
-            onWakeError: (error) => {
-              process.stderr.write(
-                `[dorey:wake] Could not wake the original Codex task; queued feedback remains available to heartbeat/poll: ${error instanceof Error ? error.message : String(error)}\n`,
-              );
-            },
-            wake:
-              deliveryMode === "wake"
-                ? async ({ request, submission }) => {
-                    await runCodexDesktopWake(
-                      {
-                        payloadPath: submission.payloadPath,
-                        replyCommand: submission.replyCommand,
-                        request,
-                        requestId: submission.requestId,
-                      },
-                      { cwd: workspaceRoot },
-                    );
-                  }
-                : undefined,
           }),
         );
         server.middlewares.use(
@@ -218,7 +219,7 @@ function parseDoreyLaunchMode(value: string | undefined): DoreyLaunchMode | unde
 function parseDoreyDeliveryMode(
   value: string | undefined,
 ): DoreyDeliveryMode | undefined {
-  return value === "wake" || value === "foreground" || value === "preview"
+  return value === "foreground" || value === "preview"
     ? value
     : undefined;
 }

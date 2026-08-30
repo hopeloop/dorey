@@ -3,7 +3,7 @@
 Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档审阅闭环工具。
 
 > [!IMPORTANT]
-> **当前已支持：Codex Desktop、Codex CLI、TraeX CLI。** 其中，Codex Desktop，Codex CLI 和 TraeX CLI 支持原会话回传。
+> **当前已支持：Codex Desktop、Codex CLI、TraeX CLI。** 三者都通过保持在原会话中的 foreground poll 接收反馈；已经结束的 Agent turn 不会被 Dorey 自动唤醒。
 >
 > Dorey 的评论提交依赖对应工具的 session adapter 和 `dorey poll`；**Cursor 和 Claude Code 目前均未适配**，无法把评论自动回传到它们的原会话。
 >
@@ -15,9 +15,12 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 
 - 本地 Web UI：渲染 Markdown 产物，支持选中文本、添加评论、编辑评论、删除评论、批量提交，以及直接编辑 Markdown 源码。
 - 原会话提交闭环：`Submit All` 不启动新的 `resume` 子进程，而是把 payload 写入本地队列，由启动 Dorey 的 Codex / TraeX 原会话通过 `dorey poll` 拉取。
+- 可靠投递：队列索引和 payload 写入由源文件、Agent target 与端口共同确定的稳定目录；正常重启可恢复，领取使用 delivery lease，响应断连会立即回队，废弃 lease 超时后可再次领取。
+- Agent presence：页面展示原会话当前处于未监听、正在监听或正在处理，HTTP 入队成功不会被误报成 Agent 已经开始工作。
 - 多 Agent 入口：支持 Codex Desktop 原对话、Codex CLI 会话、TraeX CLI 会话。
 - 会话上下文：每个文档至少关联一个 review session，submit payload 会携带任务目标、当前阶段、上下文摘要、关联会话和已接受历史。
 - 修订结果视图：展示摘要、逐条处理结果、修订 Markdown、渲染态 diff，并支持 `接受` 把修订设为当前版本。
+- 页面恢复：刷新或重新打开页面时恢复最近一条未确认 submission；结果应用成功后写入 acknowledge，避免 completed response 重复回放。
 - 文件与文件夹入口：CLI 显式传入 `--review-file <file>`、`--review-folder <folder>` 或 `--demo`；文件夹模式递归列出 Markdown，并在左侧显示文件树。
 - 本地图片：Markdown 的相对图片路径会从当前文档所在目录解析，并通过 Dorey 的受限图片端点加载。
 - Mermaid / PlantUML 渲染：Markdown 中的 `mermaid` 和 `plantuml` fenced code block 会在编辑器里渲染为 inline SVG，并保留源码展开与错误回退能力。
@@ -38,6 +41,8 @@ dorey --review-folder path/to/docs
 
 `--review-file` 接受 Markdown 或 HTML 文件；`--review-folder` 递归加载 `.md` 和 `.markdown`，左侧使用文件树导航。两种模式都会在临时 review workspace 中工作，不直接覆盖源文件。
 
+交互模式会在启动后保持 foreground poll。请让启动 Dorey 的 Agent turn 和命令会话持续运行，直到页面执行“结束评审”；这样用户点击 Submit 后会由同一个原会话自动收到反馈，不需要再输入 `poll`。
+
 如果只是想打开 Dorey 自带的产品 demo：
 
 ```bash
@@ -50,14 +55,14 @@ Demo 模式会在临时目录生成一组内置文档，并在页面内明确提
 
 ## 安装 Agent Skill
 
-仓库内提供与当前 wake bridge 协议配套的 `dorey-review-loop` skill。Codex 用户可以安装到个人 skills 目录：
+仓库内提供与 foreground poll 协议配套的 `dorey-review-loop` skill。Codex 用户可以安装到个人 skills 目录：
 
 ```bash
 mkdir -p ~/.codex/skills
 cp -R skills/dorey-review-loop ~/.codex/skills/
 ```
 
-Skill 会指导 Agent 正确选择 `--review-file` / `--review-folder`，在 Codex Desktop 使用 wake bridge，并用 `dorey poll --check` 作为 heartbeat 或故障兜底。
+Skill 会指导 Agent 正确选择 `--review-file` / `--review-folder`，保留启动命令的 PTY，并在每轮 reply 后继续等待。`dorey poll --check` 仅用于一次性诊断或恢复检查，不会唤醒已经结束的 Agent turn。
 
 默认地址：
 
@@ -95,7 +100,7 @@ http://127.0.0.1:5173/
 5. 输入评论内容，选择评论类型，点击 `添加`。
 6. 多条评论会进入右侧评论队列。
 7. 点击 `提交全部`。
-8. Dorey 会把完整 payload 写到 `.local/markdown-review-submits/.../payload.json`，并把本次请求排队给原 Agent 会话。
+8. Dorey 会把完整 payload 写到 `.local/dorey-submissions/<review>/active/.../payload.json`，并把本次请求排队给原 Agent 会话。
 9. 原会话里的 `dorey poll` 收到 payload 后，根据评论修订 Markdown，并把 `BatchRevisionResponse` POST 回页面给出的 reply endpoint。
 10. 页面展示 `本次返回`、`已处理评论`、`修订信息`、`差异`。
 11. 点击 `接受修订` 后，当前文档更新，评论队列清空，run history 记录为 accepted。
@@ -109,15 +114,21 @@ Dorey 的 submit 是 AXI-style pull loop：
 ```text
 Browser Submit All
   -> POST /api/agent/<target>/revise
-  -> server writes .local/markdown-review-submits/<target>-<id>/payload.json
+  -> server writes payload.json and revision-poll-state.json
   -> server returns dorey poll / raw poll / reply commands
-  -> original Codex/TraeX session runs dorey poll --target <target>
+  -> foreground poll already attached to the original Codex/TraeX session
   -> original session reads payload and produces BatchRevisionResponse
   -> original session POSTs /api/agent/submissions/<id>/reply
   -> browser shows revision / diff / accept controls
 ```
 
-这个机制刻意不走 `codex exec resume` 或 `traex exec resume`。原因是：修改方案需要原会话上下文，Dorey 要让 prompt 和 payload 回到启动它的那个 Agent 会话里，而不是开一个用户看不见的新上下文。
+这个机制刻意不走 `codex app-server thread/resume`、`codex exec resume` 或 `traex exec resume`。原因是：Desktop 已经持有原 task 的 writer，再启动一个 App Server 会产生 writer 冲突；前台 poll 则直接把反馈交给仍然活跃的原会话。
+
+Poll 领取反馈后会获得 15 分钟 delivery lease。HTTP 响应未写完就断连时，请求立即恢复为 queued；Agent 领取后崩溃且没有 reply 时，lease 到期后下一次 poll 会重新领取。
+
+交互 review 的状态目录由 `source + target + port` 稳定派生，位于启动目录的 `.local/dorey-submissions/<review>/active/`。同一 review 正常停止再启动会恢复 queue；如果上一次已经执行“结束评审”，旧状态会移到同 namespace 的 `archive/`，新启动不会继承 `review_closed`。页面只恢复未 acknowledge 的 submission，成功展示 completed response 后立即 acknowledge。
+
+“结束评审”采用 stop-new-work 语义：尚未领取的 queued request 不再投递，foreground poll 返回 `review_closed`；已经领取的 in-flight request 仍可提交完成结果。后台 server 的 stdout/stderr 写入临时 review workspace 的 `.local/dorey/server.log`。
 
 ## CLI 命令
 
@@ -125,7 +136,7 @@ Browser Submit All
 dorey --review-file README.md # review 单个 Markdown 文档
 dorey --review-folder path/to/docs # review 文件夹下的 Markdown 文档
 dorey --demo                  # 打开 Dorey 自带产品 demo
-dorey poll                    # 在原 agent session 中等待 submit payload
+dorey poll                    # 在原 Agent session 中前台等待 submit payload
 dorey status                  # 查看 server health、workspace root、launcher context
 dorey stop                    # 停止后台 Web server
 ```
