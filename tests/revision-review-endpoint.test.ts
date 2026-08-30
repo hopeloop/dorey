@@ -15,11 +15,11 @@ describe("revision review endpoint", () => {
       const broker = createRevisionPollBroker({ payloadRoot });
 
       assert.deepEqual(
-        handleRevisionReviewRequest({ method: "GET" }, { broker }),
+        await handleRevisionReviewRequest({ method: "GET" }, { broker }),
         { status: 200, body: { status: "open" } },
       );
       assert.deepEqual(
-        handleRevisionReviewRequest({ method: "POST" }, { broker }),
+        await handleRevisionReviewRequest({ method: "POST" }, { broker }),
         { status: 200, body: { status: "review_closed" } },
       );
     } finally {

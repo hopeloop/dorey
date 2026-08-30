@@ -84,6 +84,7 @@ import {
 type ViewerMode = "current" | "revised" | "diff";
 type AgentMode = AgentProvider;
 type AgentExecutionTarget = "codex_desktop" | "codex_cli" | "traex_cli";
+type AgentPresenceState = "waiting" | "listening" | "working";
 
 type CommentDraft = {
   body: string;
@@ -113,6 +114,7 @@ type PendingAgentSubmission = {
   requestId: string;
   sourceMarkdown: string;
   submittedAt: string;
+  targetKey: string;
   targetLabel: string;
   workflow?: {
     artifactId: string;
@@ -151,6 +153,7 @@ export function App() {
     isPreviewOnlyLaunch(bootstrap),
   );
   const [workflowRuns, setWorkflowRuns] = useState<WorkflowRunSummary[]>([]);
+  const [workflowBootstrapComplete, setWorkflowBootstrapComplete] = useState(false);
   const [activeWorkflowRunKey, setActiveWorkflowRunKey] = useState<
     string | null
   >(null);
@@ -194,8 +197,40 @@ export function App() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitStatus, setSubmitStatus] = useState<string | null>(null);
   const [reviewClosed, setReviewClosed] = useState(false);
+  const [agentPresence, setAgentPresence] = useState<AgentPresenceState | null>(null);
   const submitAbortRef = useRef<AbortController | null>(null);
+  const appliedSubmissionIdsRef = useRef(new Set<string>());
+  const recoveredSubmissionTargetRef = useRef<string | null>(null);
   const markdownRootRef = useRef<HTMLDivElement>(null);
+  const presenceTargetKey = pendingSubmission?.targetKey || bootstrap.targetKey;
+
+  useEffect(() => {
+    setAgentPresence(null);
+    if (!presenceTargetKey || isPreviewOnlyLaunchMode) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+    const checkPresence = async () => {
+      try {
+        const response = await fetch(
+          `/api/agent/presence?target=${encodeURIComponent(presenceTargetKey)}`,
+        );
+        if (!response.ok) throw new Error(await response.text());
+        const body = (await response.json()) as { state?: AgentPresenceState };
+        if (!cancelled && body.state) setAgentPresence(body.state);
+      } catch {
+        if (!cancelled) setAgentPresence(null);
+      } finally {
+        if (!cancelled) timer = window.setTimeout(checkPresence, 1500);
+      }
+    };
+
+    void checkPresence();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [isPreviewOnlyLaunchMode, presenceTargetKey]);
 
   const activeArtifact = useMemo(
     () => artifacts.find((artifact) => artifact.id === activeArtifactId),
@@ -310,6 +345,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (reviewClosed) setPendingSubmission(null);
+  }, [reviewClosed]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function bootstrapWorkflowRuns() {
@@ -330,6 +369,8 @@ export function App() {
         if (!cancelled) {
           setWorkflowError(error instanceof Error ? error.message : String(error));
         }
+      } finally {
+        if (!cancelled) setWorkflowBootstrapComplete(true);
       }
     }
 
@@ -339,6 +380,40 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const targetKey = bootstrap.targetKey;
+    if (
+      !workflowBootstrapComplete ||
+      isPreviewOnlyLaunchMode ||
+      reviewClosed ||
+      !targetKey ||
+      recoveredSubmissionTargetRef.current === targetKey
+    ) {
+      return;
+    }
+
+    recoveredSubmissionTargetRef.current = targetKey;
+    let cancelled = false;
+
+    void fetchLatestUnacknowledgedSubmission(targetKey)
+      .then((status) => {
+        if (cancelled || !status) return;
+        const recovered = pendingSubmissionFromStatus(status, artifacts);
+        if (recovered) setPendingSubmission(recovered);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setSubmitError(
+            `恢复最近一次评审提交失败：${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [artifacts, bootstrap.targetKey, isPreviewOnlyLaunchMode, reviewClosed, workflowBootstrapComplete]);
 
   useEffect(() => {
     if (!pendingSubmission) {
@@ -589,6 +664,7 @@ export function App() {
         requestId: `direct-${Date.now()}`,
         sourceMarkdown: active.markdown,
         submittedAt: now,
+        targetKey: bootstrap.targetKey ?? "",
         targetLabel: executionTargetLabels[activeExecutionTarget],
         workflow: activeWorkflow
           ? {
@@ -609,6 +685,7 @@ export function App() {
           pollCommand: response.pollCommand,
           replyCommand: response.replyCommand,
           requestId: response.requestId,
+          targetKey: response.target.key,
           targetLabel: response.target.label,
         });
         setSubmitStatus(response.message);
@@ -648,7 +725,7 @@ export function App() {
 
     setReviewClosed(true);
     setPendingSubmission(null);
-    setSubmitStatus("评审已结束；wake bridge 与 heartbeat 可以停止。");
+    setSubmitStatus("评审已结束；foreground poll 已停止。");
   }
 
   function startSourceEdit() {
@@ -757,6 +834,15 @@ export function App() {
     pending: PendingAgentSubmission,
     response: BatchRevisionResponse,
   ) {
+    const shouldAcknowledge = !pending.requestId.startsWith("direct-");
+    if (appliedSubmissionIdsRef.current.has(pending.requestId)) {
+      if (shouldAcknowledge) await acknowledgeRevisionSubmission(pending.requestId);
+      setPendingSubmission((current) =>
+        current?.requestId === pending.requestId ? null : current,
+      );
+      return;
+    }
+
     const completedAt = new Date().toISOString();
     const reviewRun = createReviewRunRecord({
       adapter: pending.executionProvider,
@@ -795,6 +881,8 @@ export function App() {
       workflowRevisionTrace,
     });
     setReviewRuns((current) => [...current, reviewRun]);
+    appliedSubmissionIdsRef.current.add(pending.requestId);
+    if (shouldAcknowledge) await acknowledgeRevisionSubmission(pending.requestId);
     setPendingSubmission((current) =>
       current?.requestId === pending.requestId ? null : current,
     );
@@ -1373,6 +1461,13 @@ export function App() {
             </div>
           ) : null}
 
+          {!isPreviewOnlyLaunchMode && presenceTargetKey ? (
+            <div className="agent-note agent-presence-note" role="status">
+              <span>Agent 状态</span>
+              <p>{formatAgentPresence(agentPresence)}</p>
+            </div>
+          ) : null}
+
           {activeExecutionVisibility ? (
             <div className="agent-note session-execution-note">
               <span>提交去向</span>
@@ -1516,26 +1611,17 @@ export function App() {
               <div className="result-header">
                 <div>
                   <h3>等待原 Agent 会话处理</h3>
-                  {bootstrap.deliveryMode === "wake" ? (
-                    <p>
-                      已排队到 {pendingSubmission.targetLabel}，wake bridge 已请求
-                      唤醒原 Codex task；无需保持启动 Dorey 的 turn 或 Bash poll。
-                    </p>
-                  ) : (
-                    <p>
-                      已排队到 {pendingSubmission.targetLabel}。foreground 模式下请让
-                      原 Agent 会话运行配置命令并保持等待；页面只等待 reply 返回。
-                    </p>
-                  )}
+                  <p>
+                    已排队到 {pendingSubmission.targetLabel}。原 Agent 会话的
+                    foreground poll 会自动领取；请保持启动 Dorey 的 turn 运行。
+                  </p>
                 </div>
                 <span className="status-chip">待处理</span>
               </div>
 
               <section className="result-section">
                 <h4>
-                  {bootstrap.deliveryMode === "wake"
-                    ? "Fallback Check 命令"
-                    : "配置原会话命令"}
+                  配置原会话命令
                 </h4>
                 <code className="command-block">
                   {pendingSubmission.agentPollCommand}
@@ -2063,6 +2149,13 @@ function formatRunStatus(status: ReviewRunRecord["status"]): string {
   return "待确认";
 }
 
+function formatAgentPresence(state: AgentPresenceState | null): string {
+  if (state === "listening") return "正在监听；Submit 会自动送达原 Agent 会话。";
+  if (state === "working") return "已领取反馈，Agent 正在处理。";
+  if (state === "waiting") return "当前没有 Agent poll；Submit 会保留在队列中。";
+  return "暂时无法确认 Agent 是否正在监听。";
+}
+
 function getCliSessionKind(provider: AgentProvider): CliSessionKind {
   if (provider === "codex") {
     return "codex_cli_session";
@@ -2224,6 +2317,58 @@ async function fetchRevisionSubmissionStatus(
   }
 
   return (await response.json()) as RevisionSubmissionStatus;
+}
+
+async function fetchLatestUnacknowledgedSubmission(
+  targetKey: string,
+): Promise<RevisionSubmissionStatus | undefined> {
+  const search = new URLSearchParams({
+    limit: "1",
+    target: targetKey,
+    unacknowledged: "1",
+  });
+  const response = await fetch(`/api/agent/submissions?${search.toString()}`);
+  if (!response.ok) throw new Error(await readHttpError(response));
+  const body = (await response.json()) as { submissions?: RevisionSubmissionStatus[] };
+  return body.submissions?.[0];
+}
+
+async function acknowledgeRevisionSubmission(requestId: string): Promise<void> {
+  const response = await fetch(
+    `/api/agent/submissions/${encodeURIComponent(requestId)}/acknowledge`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw new Error(await readHttpError(response));
+}
+
+function pendingSubmissionFromStatus(
+  status: RevisionSubmissionStatus,
+  artifacts: Artifact[],
+): PendingAgentSubmission | undefined {
+  if (status.acknowledgedAt || !status.request.contextSnapshot) return undefined;
+  const artifact = artifacts.find((candidate) => candidate.id === status.request.artifact.id);
+  if (!artifact) return undefined;
+  const workflow = artifact.metadata?.workflow;
+
+  return {
+    agentPollCommand: status.agentPollCommand,
+    artifactId: artifact.id,
+    comments: status.request.comments,
+    contextSnapshot: status.request.contextSnapshot,
+    executionProvider: status.target.provider,
+    payloadPath: status.payloadPath,
+    pollCommand: status.pollCommand,
+    replyCommand: status.replyCommand,
+    request: status.request,
+    requestId: status.requestId,
+    sourceMarkdown: status.request.artifact.markdown,
+    submittedAt: status.queuedAt,
+    targetKey: status.target.key,
+    targetLabel: status.target.label,
+    workflow: workflow
+      ? { artifactId: workflow.artifactId, runKey: workflow.runKey }
+      : undefined,
+  };
 }
 
 async function readHttpError(response: Response): Promise<string> {

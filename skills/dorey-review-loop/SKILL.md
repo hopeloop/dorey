@@ -7,13 +7,12 @@ description: Use when a Codex or TraeX task mentions opening, reviewing, waiting
 
 ## Core contract
 
-Dorey owns the long-lived review state. An Agent turn handles one bounded action and ends. For Codex Desktop, use the wake bridge; do not keep the launch turn alive with an infinite Bash poll.
+Dorey owns durable review state, while the task that launched it owns the live delivery channel. Keep Dorey's foreground poll attached to that active Agent turn; Dorey does not try to resume an ended Codex task.
 
 ```text
-launch -> Dorey server remains open -> user submits
-                                   -> wake original task -> handle one request -> reply -> turn ends
-                                   -> heartbeat fallback checks once per minute
-user ends review -> review_closed -> heartbeat stops
+launch -> foreground poll waits in original task -> user submits
+       -> same poll returns one request -> Agent handles and replies -> poll waits again
+user ends review -> review_closed -> foreground poll exits
 ```
 
 Read [references/dorey-cli-and-protocol.md](references/dorey-cli-and-protocol.md) before launching, handling feedback, or troubleshooting.
@@ -32,19 +31,20 @@ Read [references/dorey-cli-and-protocol.md](references/dorey-cli-and-protocol.md
 
 ## Choose delivery by host
 
-### Codex Desktop: wake mode
+### Codex Desktop: foreground mode
 
-`codex-desktop:<thread-id>` defaults to `deliveryMode=wake`.
+`codex-desktop:<thread-id>` defaults to `deliveryMode=foreground`.
 
-- The launch command starts the server, opens the page, prints `Wake bridge armed`, and exits. Ending that Agent turn is correct.
-- Each Dorey submit is durably queued first, then Dorey asks Codex App Server to start a fresh turn in the original task.
-- A wake turn contains `requestId`, `payloadPath`, and `replyCommand`. Handle exactly that request, POST the reply, report completion, and end the turn.
-- Do not start a second foreground `dorey poll` unless diagnosing wake failure.
-- When same-task recurring automations are available, add a one-minute local heartbeat as a fallback. Each heartbeat runs `dorey poll --check --base-url <url> --target <target>` once: `waiting` ends silently, `feedback` handles and replies to one request, and `review_closed` removes the heartbeat. Never keep a heartbeat turn alive between checks.
+- The launch command starts the server, opens the page, and remains attached to a long poll. Keep its PTY/session alive.
+- Each submit is persisted before the waiting poll claims it. The browser shows `listening`, `working`, or `waiting` from server-derived presence.
+- Queue state uses a stable namespace derived from review source, target, and port. Relaunching the same open review recovers queued, delivered, and completed submissions instead of starting from an unrelated temporary queue.
+- A delivered request has a lease. If the HTTP response disconnects before completion it is returned to the queue; an abandoned lease expires and can be claimed again.
+- Do not background the poll or let the launch turn finish while review is active. An ended Codex turn has no supported Dorey wake path.
+- `dorey poll --check` is a one-shot diagnostic/recovery command, not an automatic callback mechanism.
 
 ### Codex CLI or TraeX: foreground mode
 
-CLI targets default to `deliveryMode=foreground` because they do not have the Codex Desktop wake bridge.
+CLI targets also default to `deliveryMode=foreground`.
 
 - Keep the returned PTY/session ID and read it with short waits.
 - Process each `status: "feedback"`, reply, then resume the same PTY.
@@ -62,19 +62,21 @@ Use `--preview` only when the user explicitly wants no Agent feedback. Preview m
 4. Before replying after a delayed or raced delivery, query `GET <base-url>/api/agent/submissions/<requestId>` exactly. Do not append `/status`. If it is already `completed`, do not post again.
 5. Write the response to a request-specific JSON file and run the supplied `replyCommand` with that file.
 6. Require HTTP success with the matching request ID and `status: "completed"`. A local file write is not completion.
-7. Tell the user the round is visible in Dorey. In wake/heartbeat mode, end the turn; in foreground mode, resume the saved PTY.
+7. Tell the user the round is visible in Dorey, then resume the saved foreground PTY.
+
+The browser restores only unacknowledged submissions after refresh. Once a completed response has been applied, Dorey acknowledges it so later refreshes do not replay the same revision.
 
 ## End deliberately
 
-When the user is done, use Dorey's **结束评审** action or POST `/api/dorey/review`. This changes the lifecycle to `review_closed` so heartbeat and foreground poll can stop cleanly. Then remove any heartbeat and stop only the server/port for this review if shutdown was requested. Never use `dorey stop --all` implicitly.
+When the user is done, use Dorey's **结束评审** action or POST `/api/dorey/review`. This changes the lifecycle to `review_closed`: queued work is no longer claimed, the foreground poll stops, and an already delivered in-flight reply may still complete. A later launch archives that closed queue and opens a fresh review. Stop only the server/port for this review if shutdown was requested. Never use `dorey stop --all` implicitly.
 
 Dorey normally reviews a temporary workspace. State whether the original source was actually copied back; never imply source overwrite without verifying it.
 
 ## Red flags
 
-- Keeping a Codex Desktop launch turn alive in an infinite poll.
+- Letting a Codex Desktop launch turn end while review is still active.
 - Requiring the user to type `poll` before feedback is noticed.
-- Claiming wake succeeded when the request is only queued.
+- Claiming an ended Codex task will be automatically woken.
 - Launching preview mode for interactive feedback.
 - Inventing a thread/session ID or replacing another review's port.
 - Treating browser close as `review_closed`.

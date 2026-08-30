@@ -16,6 +16,7 @@ export type {
   BatchRevisionResponse,
   BatchRevisionSubmitResponse,
   QueuedRevisionSubmission,
+  RevisionSubmissionList,
   RevisionSubmissionStatus,
   RevisionSubmitTarget,
   RevisionSubmitTransport,

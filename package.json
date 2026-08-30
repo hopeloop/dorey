@@ -1,6 +1,6 @@
 {
   "name": "dorey",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "a local doc review loop for AI coding artifacts",
   "private": true,
   "type": "module",

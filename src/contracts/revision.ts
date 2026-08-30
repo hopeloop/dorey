@@ -47,28 +47,30 @@ export type QueuedRevisionSubmission = {
   target: RevisionSubmitTarget;
 };
 
+type RevisionSubmissionStatusBase = {
+  acknowledgedAt?: string;
+  agentPollCommand: string;
+  payloadPath: string;
+  pollCommand: string;
+  queuedAt: string;
+  replyCommand: string;
+  request: BatchRevisionRequest;
+  requestId: string;
+  target: RevisionSubmitTarget;
+};
+
 export type RevisionSubmissionStatus =
-  | {
-      agentPollCommand: string;
-      payloadPath: string;
-      pollCommand: string;
-      queuedAt: string;
-      replyCommand: string;
-      requestId: string;
+  | (RevisionSubmissionStatusBase & {
       status: "queued" | "delivered";
-      target: RevisionSubmitTarget;
-    }
-  | {
-      agentPollCommand: string;
-      payloadPath: string;
-      pollCommand: string;
-      queuedAt: string;
-      replyCommand: string;
-      requestId: string;
+    })
+  | (RevisionSubmissionStatusBase & {
       response: BatchRevisionResponse;
       status: "completed";
-      target: RevisionSubmitTarget;
-    };
+    });
+
+export type RevisionSubmissionList = {
+  submissions: RevisionSubmissionStatus[];
+};
 
 export type BatchRevisionSubmitResponse =
   | BatchRevisionResponse
