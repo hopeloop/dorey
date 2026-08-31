@@ -1368,6 +1368,12 @@ button:disabled {
   padding: 32px;
 }
 
+@media (max-height: 760px) and (min-width: 1121px) {
+  .review-sidebar {
+    grid-template-rows: minmax(260px, 1fr) auto minmax(170px, 0.48fr);
+  }
+}
+
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 220px minmax(0, 1fr);

@@ -1,0 +1,24 @@
+name: Dorey regression
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          cache: npm
+          node-version: "22"
+      - run: npm ci
+      - run: ./node_modules/.bin/playwright install --with-deps chromium
+      - run: npm test
+      - run: npm run test:browser
+      - run: npm run typecheck
+      - run: npm run build
