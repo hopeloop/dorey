@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dorey"
+  short_description: "了解 Dorey 并正确使用本地文档评审命令"
+  default_prompt: "使用 $dorey 打开这份文档，并说明当前评审状态。"

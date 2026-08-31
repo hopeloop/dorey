@@ -36,7 +36,7 @@
 | DOR-P1-001 | 启动参数与 target | `--review-file` / `--review-folder` 正确识别；无 target 时只进入 preview | `tests/revision-agent-poll-cli.test.ts` |
 | DOR-P1-002 | lease 到期恢复 | abandoned delivery 到期后可被其他 poll client 领取；同 client 续租不会误抢 | `tests/revision-poll-broker.test.ts` |
 | DOR-P1-003 | 单文件与相对图片 | Markdown 和引用的本地图片进入临时 workspace，资源 MIME 正确 | `tests/revision-agent-poll-cli.test.ts`、`tests/workflow-run-endpoint.test.ts` |
-| DOR-P1-004 | 接受修订写回 | 原文件未变时原子写回；外部改动时返回冲突且不覆盖 | 当前基线未覆盖；合入 source writeback 实现时必须补齐 |
+| DOR-P1-004 | 接受修订写回 | 原文件未变时原子写回；外部改动时返回冲突且不覆盖 | `tests/workflow-run-endpoint.test.ts` |
 | DOR-P1-005 | UI 状态契约 | 页面保留自动查询、恢复、acknowledge 和 review close 的用户可见状态 | `tests/ui-contract.test.ts`、`tests/review-lifecycle-regression.test.ts` |
 
 ## 人工 smoke（发布候选版本）
@@ -44,7 +44,7 @@
 自动化通过后，用一个临时 Markdown 文件执行一次真实前台评审：
 
 1. 从原 Codex 任务运行 `dorey --review-file '<absolute-path>'`，保持启动命令和当前 turn 存活。
-2. `dorey status` 确认 `previewOnly=false`、`deliveryMode=foreground`、target 与当前任务一致。
+2. `dorey doctor` 确认 `previewOnly=false`、`deliveryMode=foreground`、target 与当前任务一致，且 lifecycle 为 `listening`。
 3. 页面提交一条可观察的改写意见，确认状态依次可判断为 queued/working/completed。
 4. Agent 回复后不做手工 `poll --check`，确认页面自动出现修订结果。
 5. 刷新页面，确认 completed 结果不重复应用。
