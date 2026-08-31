@@ -112,6 +112,8 @@ test("DOR-BROWSER-P0-001: submit -> foreground feedback -> reply -> automatic UI
       })
       .toBe(0);
 
+    await page.getByRole("button", { name: "接受修订" }).click();
+
     closePollController = new AbortController();
     const closePoll = fetch(
       `${baseUrl}/api/agent/poll?target=${encodeURIComponent(targetKey)}&clientId=browser-e2e&timeoutMs=30000`,
