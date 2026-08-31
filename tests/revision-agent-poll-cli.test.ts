@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -10,6 +10,7 @@ import {
   archiveClosedDoreyState,
   buildDoreyServerEnv,
   buildDoreyHelpText,
+  buildDoreyServerConflictMessage,
   buildNoPollPreviewWarning,
   buildNoSessionTargetWarning,
   buildRevisionAgentPollCommand,
@@ -23,6 +24,7 @@ import {
   parseRevisionAgentPollArgs,
   resolveRevisionPollTargetFromEnv,
   resolveDoreyStateRoot,
+  runDoreyCli,
   runRevisionAgentPollLoop,
 } from "../src/server/revision-agent-poll-cli.js";
 
@@ -528,7 +530,20 @@ describe("revision agent poll CLI", () => {
     }
   });
 
-  it("parses server status and stop commands", () => {
+  it("parses server doctor, status and stop commands", () => {
+    const doctorOptions = parseDoreyCliArgs(
+      ["doctor", "--port", "5181"],
+      {},
+      "/tmp/review-workspace",
+    );
+
+    assert.equal(doctorOptions.command, "doctor");
+
+    if (doctorOptions.command === "doctor") {
+      assert.equal(doctorOptions.baseUrl, "http://127.0.0.1:5181");
+      assert.equal(doctorOptions.port, 5181);
+    }
+
     const statusOptions = parseDoreyCliArgs(
       ["status", "--port", "5182"],
       {},
@@ -575,10 +590,132 @@ describe("revision agent poll CLI", () => {
     assert.match(help, /dorey --review-file <file>/);
     assert.match(help, /dorey --demo/);
     assert.match(help, /dorey poll/);
+    assert.match(help, /dorey doctor/);
     assert.match(help, /dorey status/);
     assert.match(help, /dorey stop/);
     assert.doesNotMatch(help, /dorey\s+Recommended for interactive review/);
     assert.doesNotMatch(help, /dorey open/);
+  });
+
+  it("reports one actionable lifecycle state from dorey doctor", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalStdoutWrite = process.stdout.write;
+    let output = "";
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/dorey/health")) {
+        return jsonResponse({
+          app: "dorey",
+          deliveryMode: "foreground",
+          previewOnly: false,
+          serverLogPath: "/tmp/dorey/server.log",
+          stateRoot: "/tmp/dorey/state",
+          targetKey: "codex-desktop:thread-1",
+          workspaceRoot: "/tmp/dorey/workspace",
+        });
+      }
+
+      if (url.includes("/api/agent/presence?")) {
+        return jsonResponse({
+          activePolls: 1,
+          leasedRequests: 0,
+          state: "listening",
+          targetKey: "codex-desktop:thread-1",
+        });
+      }
+
+      if (url.includes("/api/agent/submissions?")) {
+        return jsonResponse({ submissions: [] });
+      }
+
+      if (url.endsWith("/api/dorey/review")) {
+        return jsonResponse({ status: "open" });
+      }
+
+      throw new Error(`Unexpected doctor request: ${url}`);
+    }) as typeof fetch;
+    process.stdout.write = ((chunk: unknown) => {
+      output += String(chunk);
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      const exitCode = await runDoreyCli([
+        "doctor",
+        "--base-url",
+        "http://127.0.0.1:5175",
+      ]);
+      const report = JSON.parse(output);
+
+      assert.equal(exitCode, 0);
+      assert.equal(report.ok, true);
+      assert.equal(report.lifecycle, "listening");
+      assert.equal(report.targetKey, "codex-desktop:thread-1");
+      assert.match(report.nextAction, /提交评审意见/);
+      assert.deepEqual(report.submissions, {
+        completed: 0,
+        delivered: 0,
+        queued: 0,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.stdout.write = originalStdoutWrite;
+    }
+  });
+
+  it("refuses to replace another review on the same port", () => {
+    const message = buildDoreyServerConflictMessage({
+      app: "dorey",
+      deliveryMode: "foreground",
+      targetKey: "codex-desktop:other-thread",
+      workspaceRoot: "/tmp/other-review",
+    }, "http://127.0.0.1:5175");
+
+    assert.match(message, /another workspace or Agent session/);
+    assert.match(message, /--port <unused-port>/);
+    assert.doesNotMatch(message, /restart/i);
+  });
+
+  it("leaves an occupied Dorey port untouched during launch", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "dorey-port-conflict-"));
+    const source = path.join(root, "review.md");
+    const originalFetch = globalThis.fetch;
+    const originalStderrWrite = process.stderr.write;
+    const requestedUrls: string[] = [];
+    let stderr = "";
+
+    try {
+      await writeFile(source, "# Review\n", "utf8");
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        requestedUrls.push(String(input));
+        return jsonResponse({
+          app: "dorey",
+          deliveryMode: "foreground",
+          targetKey: "codex-desktop:other-thread",
+          workspaceRoot: "/tmp/other-review",
+        });
+      }) as typeof fetch;
+      process.stderr.write = ((chunk: unknown) => {
+        stderr += String(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+
+      const exitCode = await runDoreyCli(
+        ["--review-file", source, "--no-open"],
+        { CODEX_THREAD_ID: "current-thread" },
+        root,
+      );
+
+      assert.equal(exitCode, 1);
+      assert.match(stderr, /--port <unused-port>/);
+      assert.equal(requestedUrls.some((url) => url.endsWith("/api/dorey/shutdown")), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.stderr.write = originalStderrWrite;
+      await rm(root, { force: true, recursive: true });
+    }
   });
 
   it("resolves the original launcher target from Codex and TraeX environment", () => {
@@ -709,6 +846,9 @@ describe("revision agent poll CLI", () => {
       assert.equal(manifest.runId, result.runId);
       assert.equal(manifest.taskTitle, "docs");
       assert.equal(manifest.source.mode, "single-file");
+      assert.equal(manifest.source.rootPath, await realpath(path.dirname(source)));
+      assert.equal(manifest.source.files["documents/design.md"].relativePath, "design.md");
+      assert.match(manifest.source.files["documents/design.md"].sha256, /^[a-f0-9]{64}$/);
       assert.equal(manifest.artifacts, undefined);
       assert.match(copied, /^# Design/m);
       assert.equal(copiedImage, "png-bytes");
@@ -745,6 +885,15 @@ describe("revision agent poll CLI", () => {
 
       assert.equal(manifest.taskTitle, "docs");
       assert.equal(manifest.source.mode, "folder");
+      assert.equal(manifest.source.rootPath, await realpath(sourceRoot));
+      assert.equal(
+        manifest.source.files["documents/guides/intro.markdown"].relativePath,
+        "guides/intro.markdown",
+      );
+      assert.match(
+        manifest.source.files["documents/guides/intro.markdown"].sha256,
+        /^[a-f0-9]{64}$/,
+      );
       assert.match(await readFile(path.join(runRoot, "documents", "README.md"), "utf8"), /文件说明/);
       assert.match(
         await readFile(path.join(runRoot, "documents", "guides", "intro.markdown"), "utf8"),

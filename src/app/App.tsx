@@ -12,7 +12,6 @@ import {
   X,
 } from "lucide-react";
 import {
-  type ChangeEvent,
   type CSSProperties,
   type FormEvent,
   useCallback,
@@ -32,7 +31,6 @@ import type {
   BatchRevisionResponse,
   BatchRevisionSubmitResponse,
   CliSessionKind,
-  CommentCategory,
   ContextSnapshot,
   QueuedRevisionSubmission,
   QueuedComment,
@@ -85,10 +83,16 @@ type ViewerMode = "current" | "revised" | "diff";
 type AgentMode = AgentProvider;
 type AgentExecutionTarget = "codex_desktop" | "codex_cli" | "traex_cli";
 type AgentPresenceState = "waiting" | "listening" | "working";
+type ReviewLifecycleState =
+  | "listening"
+  | "queued"
+  | "working"
+  | "completed"
+  | "review_closed"
+  | "waiting";
 
 type CommentDraft = {
   body: string;
-  category: CommentCategory;
 };
 
 type AgentResult = {
@@ -122,14 +126,6 @@ type PendingAgentSubmission = {
   };
 };
 
-const categories: CommentCategory[] = [
-  "clarification",
-  "correction",
-  "rewrite",
-  "missing_info",
-  "structure",
-];
-
 const executionTargetLabels: Record<AgentExecutionTarget, string> = {
   codex_desktop: "Codex Desktop（原对话）",
   codex_cli: "Codex CLI（本地）",
@@ -137,14 +133,6 @@ const executionTargetLabels: Record<AgentExecutionTarget, string> = {
 };
 
 const submitTimeoutMs = 90_000;
-
-const categoryLabels: Record<CommentCategory, string> = {
-  clarification: "澄清",
-  correction: "纠错",
-  rewrite: "改写",
-  missing_info: "补充信息",
-  structure: "结构调整",
-};
 
 export function App() {
   const [artifacts, setArtifacts] = useState<Artifact[]>(cloneInitialArtifacts);
@@ -189,6 +177,9 @@ export function App() {
   const [sourceEditDraft, setSourceEditDraft] = useState<string | null>(null);
   const [pendingSubmission, setPendingSubmission] =
     useState<PendingAgentSubmission | null>(null);
+  const [pendingSubmissionStatus, setPendingSubmissionStatus] = useState<
+    RevisionSubmissionStatus["status"] | null
+  >(null);
   const [viewerMode, setViewerMode] = useState<ViewerMode>("current");
   const [agentMode, setAgentMode] = useState<AgentMode>(
     bootstrap.currentAgentProvider ?? "codex",
@@ -345,7 +336,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (reviewClosed) setPendingSubmission(null);
+    if (reviewClosed) {
+      setPendingSubmission(null);
+      setPendingSubmissionStatus(null);
+    }
   }, [reviewClosed]);
 
   useEffect(() => {
@@ -400,7 +394,10 @@ export function App() {
       .then((status) => {
         if (cancelled || !status) return;
         const recovered = pendingSubmissionFromStatus(status, artifacts);
-        if (recovered) setPendingSubmission(recovered);
+        if (recovered) {
+          setPendingSubmission(recovered);
+          setPendingSubmissionStatus(status.status);
+        }
       })
       .catch((error) => {
         if (!cancelled) {
@@ -432,6 +429,8 @@ export function App() {
         if (cancelled || !pendingSubmission) {
           return;
         }
+
+        setPendingSubmissionStatus(status.status);
 
         if (status.status === "completed") {
           await applyAgentRevisionResponse(pendingSubmission, status.response);
@@ -500,6 +499,7 @@ export function App() {
       setReviewRuns([]);
       setQueuedComments([]);
       setPendingSubmission(null);
+      setPendingSubmissionStatus(null);
       setPendingSelection(null);
       setCommentDraft(null);
       setExpandedCommentId(null);
@@ -548,6 +548,13 @@ export function App() {
     viewerMode === "revised" && agentResult
       ? agentResult.response.revisedMarkdown
       : active.markdown;
+  const reviewLifecycleState = getReviewLifecycleState({
+    agentPresence,
+    hasCompletedRevision: agentResult !== null,
+    pendingSubmissionStatus,
+    reviewClosed,
+  });
+  const reviewLifecycleCopy = getReviewLifecycleCopy(reviewLifecycleState);
 
   const handleSelectionMouseUp = useCallback(() => {
     if (viewerMode !== "current" || !isActiveArtifactReviewable || isSourceEditing) {
@@ -564,7 +571,6 @@ export function App() {
   function startCommentDraft() {
     setCommentDraft({
       body: "",
-      category: "clarification",
     });
   }
 
@@ -586,7 +592,6 @@ export function App() {
       artifactId: active.id,
       anchor: pendingSelection.anchor,
       body: commentDraft.body.trim(),
-      category: commentDraft.category,
       status: "queued",
       createdAt: new Date().toISOString(),
     };
@@ -597,7 +602,7 @@ export function App() {
 
   function updateComment(
     commentId: string,
-    patch: Partial<Pick<QueuedComment, "body" | "category">>,
+    patch: Partial<Pick<QueuedComment, "body">>,
   ) {
     setQueuedComments((current) =>
       current.map((comment) =>
@@ -688,6 +693,7 @@ export function App() {
           targetKey: response.target.key,
           targetLabel: response.target.label,
         });
+        setPendingSubmissionStatus("queued");
         setSubmitStatus(response.message);
         return;
       }
@@ -725,6 +731,7 @@ export function App() {
 
     setReviewClosed(true);
     setPendingSubmission(null);
+    setPendingSubmissionStatus(null);
     setSubmitStatus("评审已结束；foreground poll 已停止。");
   }
 
@@ -840,6 +847,7 @@ export function App() {
       setPendingSubmission((current) =>
         current?.requestId === pending.requestId ? null : current,
       );
+      setPendingSubmissionStatus(null);
       return;
     }
 
@@ -886,6 +894,7 @@ export function App() {
     setPendingSubmission((current) =>
       current?.requestId === pending.requestId ? null : current,
     );
+    setPendingSubmissionStatus(null);
     setSubmitError(null);
     setSubmitStatus(null);
     setViewerMode("revised");
@@ -978,6 +987,7 @@ export function App() {
     setArtifactSessionLinks(freshSessionState.links);
     setReviewRuns([]);
     setPendingSubmission(null);
+    setPendingSubmissionStatus(null);
     setQueuedComments([]);
     setPendingSelection(null);
     setCommentDraft(null);
@@ -1322,11 +1332,6 @@ export function App() {
                     tabIndex={0}
                   >
                     <div className="comment-item-header">
-                      <div className="comment-item-meta">
-                        <span className="category-pill">
-                          {categoryLabels[comment.category ?? "clarification"]}
-                        </span>
-                      </div>
                       <div className="comment-item-actions">
                         <small>{comment.anchor.blockId}</small>
                         <button
@@ -1368,23 +1373,6 @@ export function App() {
                           }
                           value={comment.body}
                         />
-                        <div className="comment-controls">
-                          <select
-                            aria-label="评论类型"
-                            onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                              updateComment(comment.id, {
-                                category: event.target.value as CommentCategory,
-                              })
-                            }
-                            value={comment.category}
-                          >
-                            {categories.map((category) => (
-                              <option key={category} value={category}>
-                                {categoryLabels[category]}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
                       </div>
                     ) : null}
                   </article>
@@ -1400,6 +1388,16 @@ export function App() {
               <h2>全文评论（可选）</h2>
               <p>评论队列或全文评论有内容即可提交</p>
             </div>
+            <button
+              aria-label="清空全文评论"
+              className="text-button clear-global-comment"
+              disabled={globalInstruction.length === 0 || isSubmitting}
+              onClick={() => setGlobalInstruction("")}
+              type="button"
+            >
+              <Trash2 size={14} aria-hidden="true" />
+              <span>清空</span>
+            </button>
           </div>
 
           <textarea
@@ -1462,9 +1460,13 @@ export function App() {
           ) : null}
 
           {!isPreviewOnlyLaunchMode && presenceTargetKey ? (
-            <div className="agent-note agent-presence-note" role="status">
-              <span>Agent 状态</span>
-              <p>{formatAgentPresence(agentPresence)}</p>
+            <div
+              className="agent-note agent-presence-note review-lifecycle"
+              data-state={reviewLifecycleState}
+              role="status"
+            >
+              <span>Agent 状态 · 评审链路 · {reviewLifecycleCopy.label}</span>
+              <p>{reviewLifecycleCopy.nextAction}</p>
             </div>
           ) : null}
 
@@ -1616,7 +1618,7 @@ export function App() {
                     foreground poll 会自动领取；请保持启动 Dorey 的 turn 运行。
                   </p>
                 </div>
-                <span className="status-chip">待处理</span>
+                <span className="status-chip">{reviewLifecycleCopy.label}</span>
               </div>
 
               <section className="result-section">
@@ -1645,7 +1647,10 @@ export function App() {
 
               <button
                 className="text-button cancel-submit"
-                onClick={() => setPendingSubmission(null)}
+                onClick={() => {
+                  setPendingSubmission(null);
+                  setPendingSubmissionStatus(null);
+                }}
                 type="button"
               >
                 取消页面等待
@@ -2082,24 +2087,6 @@ function SelectionPopover({
         placeholder="输入评论"
         value={draft.body}
       />
-      <div className="comment-controls">
-        <select
-          aria-label="草稿评论类型"
-          onChange={(event) =>
-            onDraftChange({
-              ...draft,
-              category: event.target.value as CommentCategory,
-            })
-          }
-          value={draft.category}
-        >
-          {categories.map((category) => (
-            <option key={category} value={category}>
-              {categoryLabels[category]}
-            </option>
-          ))}
-        </select>
-      </div>
       <div className="popover-actions">
         <button className="text-button" onClick={onCancel} type="button">
           取消
@@ -2154,6 +2141,61 @@ function formatAgentPresence(state: AgentPresenceState | null): string {
   if (state === "working") return "已领取反馈，Agent 正在处理。";
   if (state === "waiting") return "当前没有 Agent poll；Submit 会保留在队列中。";
   return "暂时无法确认 Agent 是否正在监听。";
+}
+
+function getReviewLifecycleState(input: {
+  agentPresence: AgentPresenceState | null;
+  hasCompletedRevision: boolean;
+  pendingSubmissionStatus: RevisionSubmissionStatus["status"] | null;
+  reviewClosed: boolean;
+}): ReviewLifecycleState {
+  if (input.reviewClosed) return "review_closed";
+  if (input.hasCompletedRevision || input.pendingSubmissionStatus === "completed") {
+    return "completed";
+  }
+  if (input.pendingSubmissionStatus === "delivered" || input.agentPresence === "working") {
+    return "working";
+  }
+  if (input.pendingSubmissionStatus === "queued") return "queued";
+  if (input.agentPresence === "listening") return "listening";
+  return "waiting";
+}
+
+function getReviewLifecycleCopy(state: ReviewLifecycleState): {
+  label: string;
+  nextAction: string;
+} {
+  if (state === "listening") {
+    return {
+      label: "正在监听",
+      nextAction: "可以提交评审意见，Dorey 会自动送达原 Agent 会话。",
+    };
+  }
+  if (state === "queued") {
+    return {
+      label: "已排队",
+      nextAction: "已排队，等待 Agent 领取；请保持启动 Dorey 的任务运行。",
+    };
+  }
+  if (state === "working") {
+    return {
+      label: "处理中",
+      nextAction: "Agent 已领取，正在处理；完成后修订会自动回到页面。",
+    };
+  }
+  if (state === "completed") {
+    return {
+      label: "待接受",
+      nextAction: "修订已返回，等待接受；也可以继续查看差异。",
+    };
+  }
+  if (state === "review_closed") {
+    return { label: "已结束", nextAction: "评审已结束，不再领取新任务。" };
+  }
+  return {
+    label: "未监听",
+    nextAction: "当前没有 foreground poll；从原 Agent 任务重新运行 Dorey 打开命令。",
+  };
 }
 
 function getCliSessionKind(provider: AgentProvider): CliSessionKind {

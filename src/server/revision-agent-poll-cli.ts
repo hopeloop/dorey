@@ -70,6 +70,7 @@ const launcherTargetEnvKeys = [
 export type DoreyHealth = {
   app?: string;
   deliveryMode?: DoreyDeliveryMode;
+  launchMode?: DoreyLaunchMode;
   launcherContext?: {
     provider?: string;
     sessionId?: string;
@@ -78,6 +79,34 @@ export type DoreyHealth = {
   previewOnly?: boolean;
   serverLogPath?: string;
   stateRoot?: string;
+  targetKey?: string;
+  workspaceRoot?: string;
+};
+
+export type DoreyDoctorLifecycle =
+  | "listening"
+  | "queued"
+  | "working"
+  | "completed"
+  | "review_closed"
+  | "preview"
+  | "waiting";
+
+export type DoreyDoctorReport = {
+  baseUrl: string;
+  deliveryMode?: DoreyDeliveryMode;
+  lifecycle: DoreyDoctorLifecycle;
+  nextAction: string;
+  ok: boolean;
+  previewOnly: boolean;
+  serverLogPath?: string;
+  stateRoot?: string;
+  submissions: {
+    completed: number;
+    delivered: number;
+    queued: number;
+  };
+  targetKey?: string;
   workspaceRoot?: string;
 };
 
@@ -119,6 +148,12 @@ export type DoreyCliOptions =
       host: string;
       port: number;
       workspaceRoot: string;
+    }
+  | {
+      baseUrl: string;
+      command: "doctor";
+      host: string;
+      port: number;
     }
   | {
       baseUrl: string;
@@ -260,7 +295,7 @@ export function parseDoreyCliArgs(
     return parseDoreyServerArgs(rest, env, cwd);
   }
 
-  if (command === "status" || command === "stop") {
+  if (command === "doctor" || command === "status" || command === "stop") {
     return parseDoreyControlArgs(command, rest, env);
   }
 
@@ -377,6 +412,10 @@ export async function runDoreyCli(
     return await runDoreyServer(options);
   }
 
+  if (options.command === "doctor") {
+    return await runDoreyDoctor(options);
+  }
+
   if (options.command === "status") {
     return await runDoreyStatus(options);
   }
@@ -385,46 +424,50 @@ export async function runDoreyCli(
     return await runDoreyStop(options);
   }
 
-  const launchWorkspace = await prepareDoreyLaunchWorkspace(options);
-  const stateRoot = options.previewOnly
-    ? path.join(launchWorkspace.workspaceRoot, ".local", "markdown-review-submits")
-    : options.stateRoot;
-  if (!options.previewOnly) await archiveClosedDoreyState(stateRoot);
-  const launchOptions = {
-    ...options,
-    stateRoot,
-    workflowRoot: launchWorkspace.workflowRoot,
-    workspaceRoot: launchWorkspace.workspaceRoot,
-  };
+  try {
+    const launchWorkspace = await prepareDoreyLaunchWorkspace(options);
+    const stateRoot = options.previewOnly
+      ? path.join(launchWorkspace.workspaceRoot, ".local", "markdown-review-submits")
+      : options.stateRoot;
+    if (!options.previewOnly) await archiveClosedDoreyState(stateRoot);
+    const launchOptions = {
+      ...options,
+      stateRoot,
+      workflowRoot: launchWorkspace.workflowRoot,
+      workspaceRoot: launchWorkspace.workspaceRoot,
+    };
 
-  await ensureDoreyServer(launchOptions, env);
-  process.stderr.write(`[dorey] Web UI: ${options.baseUrl}/\n`);
-  process.stderr.write(
-    `[dorey] Server log: ${path.join(launchOptions.workspaceRoot, ".local", "dorey", "server.log")}\n`,
-  );
-  if (!options.previewOnly) process.stderr.write(`[dorey] Durable queue: ${stateRoot}\n`);
+    await ensureDoreyServer(launchOptions, env);
+    process.stderr.write(`[dorey] Web UI: ${options.baseUrl}/\n`);
+    process.stderr.write(
+      `[dorey] Server log: ${path.join(launchOptions.workspaceRoot, ".local", "dorey", "server.log")}\n`,
+    );
+    if (!options.previewOnly) process.stderr.write(`[dorey] Durable queue: ${stateRoot}\n`);
 
-  if (options.openBrowser) {
-    openBrowser(options.baseUrl, { previewOnly: options.previewOnly });
+    if (options.openBrowser) {
+      openBrowser(options.baseUrl, { previewOnly: options.previewOnly });
+    }
+
+    if (options.deliveryMode === "preview") {
+      process.stderr.write(`${buildNoPollPreviewWarning(options.targetKey)}\n`);
+      return 0;
+    }
+
+    if (!options.pollOptions) {
+      process.stderr.write(`${buildNoSessionTargetWarning()}\n`);
+      return 0;
+    }
+
+    process.stderr.write(
+      `[dorey] Polling ${options.pollOptions.targetKey}. Leave this command running; submitted review payloads will print here.\n`,
+    );
+    return await runRevisionAgentPollLoop(options.pollOptions);
+  } catch (error) {
+    process.stderr.write(
+      `[dorey] Launch failed: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
   }
-
-  if (options.deliveryMode === "preview") {
-    process.stderr.write(`${buildNoPollPreviewWarning(options.targetKey)}\n`);
-
-    return 0;
-  }
-
-  if (!options.pollOptions) {
-    process.stderr.write(`${buildNoSessionTargetWarning()}\n`);
-
-    return 0;
-  }
-
-  process.stderr.write(
-    `[dorey] Polling ${options.pollOptions.targetKey}. Leave this command running; submitted review payloads will print here.\n`,
-  );
-
-  return await runRevisionAgentPollLoop(options.pollOptions);
 }
 
 export async function runRevisionAgentPollLoop(
@@ -770,8 +813,12 @@ async function materializeReviewFileWorkspace(input: {
     throw new Error("Review file must be Markdown or HTML: .md, .markdown, .html, or .htm.");
   }
 
-  const fileName = path.basename(sourcePath);
-  const hash = createHash("sha256").update(sourcePath).digest("hex").slice(0, 12);
+  const canonicalSourcePath = realpathSync(sourcePath);
+  const sourceRoot = path.dirname(canonicalSourcePath);
+  const fileName = path.basename(canonicalSourcePath);
+  const sourceContent = await readFile(canonicalSourcePath);
+  const sourceSha256 = createHash("sha256").update(sourceContent).digest("hex");
+  const hash = createHash("sha256").update(canonicalSourcePath).digest("hex").slice(0, 12);
   const runId = `single-file-${Date.now()}-${hash}`;
   const workspaceRoot = path.join(tmpdir(), "dorey-review-runs", runId);
   const workflowRoot = path.join(workspaceRoot, "workflow-runs");
@@ -780,13 +827,25 @@ async function materializeReviewFileWorkspace(input: {
 
   await mkdir(documentsDir, { recursive: true });
   await mkdir(path.join(runRoot, "review"), { recursive: true });
-  await copyFile(sourcePath, path.join(documentsDir, fileName));
-  await copyReferencedLocalImages(sourcePath, documentsDir, fileName);
+  await writeFile(path.join(documentsDir, fileName), sourceContent);
+  await copyReferencedLocalImages(
+    canonicalSourcePath,
+    documentsDir,
+    fileName,
+    sourceContent.toString("utf8"),
+  );
   await writeLaunchManifest({
     runId,
     runRoot,
+    sourceFiles: {
+      [`documents/${fileName}`]: {
+        relativePath: fileName,
+        sha256: sourceSha256,
+      },
+    },
     sourceMode: "single-file",
-    taskTitle: path.basename(path.dirname(sourcePath)),
+    sourceRoot,
+    taskTitle: path.basename(sourceRoot),
   });
 
   return {
@@ -803,17 +862,18 @@ async function materializeReviewFolderWorkspace(input: {
     throw new Error("Missing review folder. Use dorey --review-folder <folder>.");
   }
 
-  const sourceRoot = path.resolve(input.reviewFolderPath);
-  const sourceStat = await stat(sourceRoot).catch(() => undefined);
+  const requestedSourceRoot = path.resolve(input.reviewFolderPath);
+  const sourceStat = await stat(requestedSourceRoot).catch(() => undefined);
 
   if (!sourceStat) {
-    throw new Error(`Review folder does not exist: ${sourceRoot}`);
+    throw new Error(`Review folder does not exist: ${requestedSourceRoot}`);
   }
 
   if (!sourceStat.isDirectory()) {
-    throw new Error(`Review folder is not a directory: ${sourceRoot}`);
+    throw new Error(`Review folder is not a directory: ${requestedSourceRoot}`);
   }
 
+  const sourceRoot = realpathSync(requestedSourceRoot);
   const markdownFiles = await listReviewMarkdownFiles(sourceRoot);
 
   if (markdownFiles.length === 0) {
@@ -830,10 +890,28 @@ async function materializeReviewFolderWorkspace(input: {
   await mkdir(documentsDir, { recursive: true });
   await mkdir(path.join(runRoot, "review"), { recursive: true });
   await copyReviewFolder(sourceRoot, documentsDir);
+  const sourceFiles = Object.fromEntries(
+    await Promise.all(
+      markdownFiles.map(async (sourcePath) => {
+        const relativePath = path.relative(sourceRoot, sourcePath).split(path.sep).join("/");
+        const sourceContent = await readFile(sourcePath);
+        const sha256 = createHash("sha256").update(sourceContent).digest("hex");
+
+        await writeFile(path.join(documentsDir, relativePath), sourceContent);
+
+        return [
+          `documents/${relativePath}`,
+          { relativePath, sha256 },
+        ] as const;
+      }),
+    ),
+  );
   await writeLaunchManifest({
     runId,
     runRoot,
+    sourceFiles,
     sourceMode: "folder",
+    sourceRoot,
     taskTitle: path.basename(sourceRoot),
   });
 
@@ -847,12 +925,16 @@ async function materializeReviewFolderWorkspace(input: {
 async function writeLaunchManifest({
   runId,
   runRoot,
+  sourceFiles,
   sourceMode,
+  sourceRoot,
   taskTitle,
 }: {
   runId: string;
   runRoot: string;
+  sourceFiles: Record<string, { relativePath: string; sha256: string }>;
   sourceMode: "single-file" | "folder";
+  sourceRoot: string;
   taskTitle: string;
 }): Promise<void> {
   await writeFile(
@@ -864,7 +946,9 @@ async function writeLaunchManifest({
         },
         runId,
         source: {
+          files: sourceFiles,
           mode: sourceMode,
+          rootPath: sourceRoot,
         },
         taskTitle,
       },
@@ -925,10 +1009,10 @@ async function copyReferencedLocalImages(
   sourcePath: string,
   destinationRoot: string,
   documentRelativePath: string,
+  markdown: string,
 ): Promise<void> {
-  const content = await readFile(sourcePath, "utf8");
   const sourceRoot = path.dirname(sourcePath);
-  const imageSources = extractLocalImageSources(content);
+  const imageSources = extractLocalImageSources(markdown);
 
   for (const imageSource of imageSources) {
     const relativeAssetPath = resolveMarkdownAssetPath(documentRelativePath, imageSource);
@@ -1114,7 +1198,7 @@ function parseDoreyServerArgs(
 }
 
 function parseDoreyControlArgs(
-  command: "status" | "stop",
+  command: "doctor" | "status" | "stop",
   argv: string[],
   env: Env,
 ): DoreyCliOptions {
@@ -1177,10 +1261,10 @@ function parseDoreyControlArgs(
 
   const baseUrl = normalizeBaseUrl(baseUrlOverride ?? `http://${host}:${port}`);
 
-  if (command === "status") {
+  if (command === "doctor" || command === "status") {
     return {
       baseUrl,
-      command: "status",
+      command,
       host,
       port,
     };
@@ -1213,11 +1297,7 @@ async function ensureDoreyServer(
       };
     }
 
-    process.stderr.write(
-      `[dorey] Existing server at ${options.baseUrl} has a different workspace or session; restarting it for the current launch.\n`,
-    );
-    await requestDoreyStop(options.baseUrl);
-    await waitForDoreyServerDown(options.baseUrl);
+    throw new Error(buildDoreyServerConflictMessage(health, options.baseUrl));
   }
 
   const childEnv = buildDoreyServerEnv(env, options);
@@ -1253,8 +1333,20 @@ async function ensureDoreyServer(
 
   return {
     owned: true,
-    restarted: Boolean(health),
+    restarted: false,
   };
+}
+
+export function buildDoreyServerConflictMessage(
+  health: DoreyHealth,
+  baseUrl: string,
+): string {
+  const owner = [health.workspaceRoot, health.targetKey].filter(Boolean).join(" · ");
+
+  return [
+    `Dorey at ${normalizeBaseUrl(baseUrl)} already belongs to another workspace or Agent session${owner ? ` (${owner})` : ""}.`,
+    "The existing review was left untouched. Relaunch this review with --port <unused-port>, or explicitly stop the existing port first.",
+  ].join(" ");
 }
 
 export function isDoreyServerHealthCompatible(
@@ -1431,6 +1523,103 @@ async function runDoreyStatus(
   }
 }
 
+async function runDoreyDoctor(
+  options: Extract<DoreyCliOptions, { command: "doctor" }>,
+): Promise<number> {
+  try {
+    const health = await readDoreyHealth(options.baseUrl);
+    const report = await buildDoreyDoctorReport(options.baseUrl, health);
+
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return report.ok ? 0 : 1;
+  } catch (error) {
+    process.stderr.write(
+      `[dorey] Doctor could not inspect ${options.baseUrl}: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
+  }
+}
+
+async function buildDoreyDoctorReport(
+  baseUrl: string,
+  health: DoreyHealth,
+): Promise<DoreyDoctorReport> {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const targetKey = health.targetKey;
+  const review = await fetchJsonWithTimeout<{ status?: string }>(
+    `${normalizedBaseUrl}/api/dorey/review`,
+  );
+  const submissions = targetKey
+    ? await fetchJsonWithTimeout<{ submissions?: { status?: string }[] }>(
+        `${normalizedBaseUrl}/api/agent/submissions?target=${encodeURIComponent(targetKey)}&unacknowledged=1&limit=100`,
+      )
+    : { submissions: [] };
+  const presence = targetKey
+    ? await fetchJsonWithTimeout<{ state?: string }>(
+        `${normalizedBaseUrl}/api/agent/presence?target=${encodeURIComponent(targetKey)}`,
+      )
+    : undefined;
+  const counts = { completed: 0, delivered: 0, queued: 0 };
+
+  for (const submission of submissions.submissions ?? []) {
+    if (submission.status === "queued") counts.queued += 1;
+    if (submission.status === "delivered") counts.delivered += 1;
+    if (submission.status === "completed") counts.completed += 1;
+  }
+
+  const lifecycle = resolveDoreyDoctorLifecycle({
+    counts,
+    presenceState: presence?.state,
+    previewOnly: health.previewOnly === true,
+    reviewStatus: review.status,
+  });
+
+  return {
+    baseUrl: normalizedBaseUrl,
+    deliveryMode: health.deliveryMode,
+    lifecycle,
+    nextAction: doctorNextAction(lifecycle),
+    ok: lifecycle === "listening" || lifecycle === "working" || lifecycle === "completed",
+    previewOnly: health.previewOnly === true,
+    serverLogPath: health.serverLogPath,
+    stateRoot: health.stateRoot,
+    submissions: counts,
+    targetKey,
+    workspaceRoot: health.workspaceRoot,
+  };
+}
+
+function resolveDoreyDoctorLifecycle(input: {
+  counts: DoreyDoctorReport["submissions"];
+  presenceState?: string;
+  previewOnly: boolean;
+  reviewStatus?: string;
+}): DoreyDoctorLifecycle {
+  if (input.reviewStatus === "review_closed") return "review_closed";
+  if (input.previewOnly) return "preview";
+  if (input.counts.delivered > 0 || input.presenceState === "working") return "working";
+  if (input.counts.queued > 0) return "queued";
+  if (input.counts.completed > 0) return "completed";
+  if (input.presenceState === "listening") return "listening";
+  return "waiting";
+}
+
+function doctorNextAction(lifecycle: DoreyDoctorLifecycle): string {
+  if (lifecycle === "listening") return "在页面提交评审意见；foreground poll 会自动领取。";
+  if (lifecycle === "queued") return "回到启动 Dorey 的原 Agent 任务并恢复 foreground poll；队列内容会保留。";
+  if (lifecycle === "working") return "Agent 已领取反馈，等待其完成并回复本次 request。";
+  if (lifecycle === "completed") return "回到 Dorey 页面查看修订并选择接受或继续评论。";
+  if (lifecycle === "review_closed") return "本次评审已结束；需要继续时重新运行 Dorey 打开命令。";
+  if (lifecycle === "preview") return "从承载任务上下文的 Codex/TraeX 会话重新启动，且不要使用 --preview。";
+  return "没有 foreground poll 正在监听；从原 Agent 任务重新运行 Dorey 打开命令。";
+}
+
+async function fetchJsonWithTimeout<T>(url: string): Promise<T> {
+  const response = await fetchWithTimeout(url, 1_000);
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+  return (await response.json()) as T;
+}
+
 async function runDoreyStop(
   options: Extract<DoreyCliOptions, { command: "stop" }>,
 ): Promise<number> {
@@ -1553,14 +1742,14 @@ function collectProcessList(): Promise<string> {
   });
 }
 
-async function readDoreyHealth(baseUrl: string): Promise<unknown> {
+async function readDoreyHealth(baseUrl: string): Promise<DoreyHealth> {
   const response = await fetchWithTimeout(`${normalizeBaseUrl(baseUrl)}/api/dorey/health`, 1_000);
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   }
 
-  return await response.json();
+  return (await response.json()) as DoreyHealth;
 }
 
 function openBrowser(
@@ -1663,6 +1852,7 @@ export function buildDoreyHelpText(): string {
     "  dorey --review-folder <folder>  Review Markdown documents under one local folder.",
     "  dorey --demo                Open the built-in Dorey product demo.",
     "  dorey poll                  Wait for submit payloads from an existing Dorey server.",
+    "  dorey doctor                Diagnose server, target, lifecycle, queue, and the next recovery action.",
     "  dorey status                Print the running server health, workspace root, and launcher context.",
     "  dorey stop                  Stop the background Web server on the configured port.",
     "",

@@ -599,7 +599,6 @@ button:disabled {
 }
 
 .comment-item-header,
-.comment-controls,
 .popover-actions {
   align-items: center;
   display: flex;
@@ -607,17 +606,12 @@ button:disabled {
   justify-content: space-between;
 }
 
-.comment-item-meta,
 .comment-item-actions,
 .submit-row {
   align-items: center;
   display: flex;
   gap: 6px;
   min-width: 0;
-}
-
-.comment-item-meta {
-  flex-wrap: wrap;
 }
 
 .comment-item-actions {
@@ -696,16 +690,6 @@ button:disabled {
 .global-instruction,
 .session-field textarea {
   min-height: 72px;
-}
-
-.comment-controls select {
-  background: #ffffff;
-  border: 1px solid #cbd4e1;
-  border-radius: 8px;
-  color: #202a35;
-  min-width: 0;
-  padding: 7px 8px;
-  width: 100%;
 }
 
 .comment-edit-area textarea {
@@ -847,21 +831,18 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.category-pill {
-  background: #eef2f7;
-  border-radius: 999px;
-  color: #334253;
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 16px;
-  padding: 0 6px;
-}
-
 .global-instruction {
   font-size: 12px;
   line-height: 1.45;
   min-height: 46px;
   padding: 7px 9px;
+}
+
+.clear-global-comment {
+  font-size: 12px;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 6px;
 }
 
 .submit-button {
@@ -920,6 +901,32 @@ button:disabled {
   font-size: 12px;
   line-height: 1.45;
   margin: 0;
+}
+
+.review-lifecycle[data-state="listening"] {
+  background: #effcf6;
+  border-color: #86d8b4;
+}
+
+.review-lifecycle[data-state="queued"],
+.review-lifecycle[data-state="waiting"] {
+  background: #fff8eb;
+  border-color: #e8bd69;
+}
+
+.review-lifecycle[data-state="working"] {
+  background: #eef6ff;
+  border-color: #8bbcf1;
+}
+
+.review-lifecycle[data-state="completed"] {
+  background: #f3f0ff;
+  border-color: #aa9be8;
+}
+
+.review-lifecycle[data-state="review_closed"] {
+  background: #f4f5f7;
+  border-color: #c8ced7;
 }
 
 .error-message {
@@ -1366,6 +1373,12 @@ button:disabled {
 
 .empty-app {
   padding: 32px;
+}
+
+@media (max-height: 760px) and (min-width: 1121px) {
+  .review-sidebar {
+    grid-template-rows: minmax(260px, 1fr) auto minmax(170px, 0.48fr);
+  }
 }
 
 @media (max-width: 1120px) {

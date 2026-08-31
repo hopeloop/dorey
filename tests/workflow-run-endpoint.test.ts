@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
 import { handleWorkflowRunRequest } from "../src/server/workflow-run-endpoint.js";
+import { prepareDoreyLaunchWorkspace } from "../src/server/revision-agent-poll-cli.js";
 import type {
   WorkflowArtifactContent,
+  WorkflowReviewResult,
   WorkflowRevisionTraceResult,
   WorkflowRunSummary,
 } from "../src/server/workflow-run-loader.js";
@@ -161,6 +163,183 @@ describe("workflow run endpoint handler", () => {
       (accepted.body as { acceptedRevisionPath: string }).acceptedRevisionPath,
       "review/document-draft/revised.md",
     );
+    assert.deepEqual(
+      (accepted.body as WorkflowReviewResult).sourceWriteBack,
+      { status: "not-configured" },
+    );
+  });
+
+  it("writes an accepted single-file revision back to the original source", async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), "dorey-source-writeback-"));
+    const sourcePath = path.join(sourceRoot, "design.md");
+    await writeFile(sourcePath, "# Original\n", "utf8");
+    const launch = await prepareDoreyLaunchWorkspace({
+      launchMode: "single-file",
+      reviewFilePath: sourcePath,
+    });
+    const list = await handleWorkflowRunRequest({
+      body: "",
+      method: "GET",
+      root: launch.workflowRoot,
+      url: "/api/workflow-runs",
+    });
+    assert.equal(list.status, 200);
+    const run = (list.body as { runs: WorkflowRunSummary[] }).runs[0]!;
+    const artifact = run.artifacts.find(
+      (item) => item.relativePath === "documents/design.md",
+    )!;
+    const revisedMarkdown = "# Revised\n";
+
+    const accepted = await handleWorkflowRunRequest({
+      body: JSON.stringify({
+        acceptedAt: "2026-08-31T05:00:00.000Z",
+        latestRevisionRequestPath: "review/request.json",
+        latestRevisionResponsePath: "review/response.json",
+        response: {
+          addressedComments: [],
+          revisedMarkdown,
+          summary: "Write back source.",
+        },
+      }),
+      method: "POST",
+      root: launch.workflowRoot,
+      url: `/api/workflow-runs/${run.runKey}/artifacts/${artifact.id}/accept`,
+    });
+
+    assert.equal(accepted.status, 200);
+    const result = accepted.body as WorkflowReviewResult;
+    assert.deepEqual(result.sourceWriteBack, {
+      sourcePath: await realpath(sourcePath),
+      status: "written",
+    });
+    assert.equal(await readFile(sourcePath, "utf8"), revisedMarkdown);
+    assert.equal(
+      await readFile(
+        path.join(launch.workflowRoot, launch.runId, "documents", "design.md"),
+        "utf8",
+      ),
+      revisedMarkdown,
+    );
+
+    const acceptedAgain = await handleWorkflowRunRequest({
+      body: JSON.stringify({
+        acceptedAt: "2026-08-31T05:00:01.000Z",
+        latestRevisionRequestPath: "review/request-2.json",
+        latestRevisionResponsePath: "review/response-2.json",
+        response: {
+          addressedComments: [],
+          revisedMarkdown: "# Revised again\n",
+          summary: "Write back source again.",
+        },
+      }),
+      method: "POST",
+      root: launch.workflowRoot,
+      url: `/api/workflow-runs/${run.runKey}/artifacts/${artifact.id}/accept`,
+    });
+
+    assert.equal(acceptedAgain.status, 200);
+    assert.equal(await readFile(sourcePath, "utf8"), "# Revised again\n");
+  });
+
+  it("rejects accept when the original source changed after review launch", async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), "dorey-source-conflict-"));
+    const sourcePath = path.join(sourceRoot, "design.md");
+    await writeFile(sourcePath, "# Original\n", "utf8");
+    const launch = await prepareDoreyLaunchWorkspace({
+      launchMode: "single-file",
+      reviewFilePath: sourcePath,
+    });
+    const list = await handleWorkflowRunRequest({
+      body: "",
+      method: "GET",
+      root: launch.workflowRoot,
+      url: "/api/workflow-runs",
+    });
+    assert.equal(list.status, 200);
+    const run = (list.body as { runs: WorkflowRunSummary[] }).runs[0]!;
+    const artifact = run.artifacts.find(
+      (item) => item.relativePath === "documents/design.md",
+    )!;
+    await writeFile(sourcePath, "# External edit\n", "utf8");
+
+    const accepted = await handleWorkflowRunRequest({
+      body: JSON.stringify({
+        acceptedAt: "2026-08-31T05:01:00.000Z",
+        latestRevisionRequestPath: "review/request.json",
+        latestRevisionResponsePath: "review/response.json",
+        response: {
+          addressedComments: [],
+          revisedMarkdown: "# Dorey revision\n",
+          summary: "Conflicting write back.",
+        },
+      }),
+      method: "POST",
+      root: launch.workflowRoot,
+      url: `/api/workflow-runs/${run.runKey}/artifacts/${artifact.id}/accept`,
+    });
+
+    assert.equal(Number(accepted.status), 409);
+    assert.match((accepted.body as { error: string }).error, /原文件.*已被修改/);
+    assert.equal(await readFile(sourcePath, "utf8"), "# External edit\n");
+    assert.equal(
+      await readFile(
+        path.join(launch.workflowRoot, launch.runId, "documents", "design.md"),
+        "utf8",
+      ),
+      "# Original\n",
+    );
+    await assert.rejects(
+      readFile(
+        path.join(
+          launch.workflowRoot,
+          launch.runId,
+          "review",
+          artifact.id,
+          "review-result.json",
+        ),
+        "utf8",
+      ),
+    );
+  });
+
+  it("writes a folder review artifact back to its matching source file", async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), "dorey-folder-writeback-"));
+    const sourcePath = path.join(sourceRoot, "guides", "intro.md");
+    await mkdir(path.dirname(sourcePath), { recursive: true });
+    await writeFile(sourcePath, "# Intro\n", "utf8");
+    const launch = await prepareDoreyLaunchWorkspace({
+      launchMode: "folder",
+      reviewFolderPath: sourceRoot,
+    });
+    const list = await handleWorkflowRunRequest({
+      body: "",
+      method: "GET",
+      root: launch.workflowRoot,
+      url: "/api/workflow-runs",
+    });
+    assert.equal(list.status, 200);
+    const run = (list.body as { runs: WorkflowRunSummary[] }).runs[0]!;
+    const artifact = run.artifacts.find(
+      (item) => item.relativePath === "documents/guides/intro.md",
+    )!;
+
+    const accepted = await handleWorkflowRunRequest({
+      body: JSON.stringify({
+        latestRevisionRequestPath: "review/request.json",
+        latestRevisionResponsePath: "review/response.json",
+        response: {
+          addressedComments: [],
+          revisedMarkdown: "# Updated intro\n",
+          summary: "Update nested source.",
+        },
+      }),
+      method: "POST",
+      root: launch.workflowRoot,
+      url: `/api/workflow-runs/${run.runKey}/artifacts/${artifact.id}/accept`,
+    });
+
+    assert.equal(accepted.status, 200);
+    assert.equal(await readFile(sourcePath, "utf8"), "# Updated intro\n");
   });
 
   it("writes manual source edit traces through the same revision endpoint", async () => {

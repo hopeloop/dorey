@@ -170,6 +170,17 @@ describe("review workspace UI contract", () => {
     assert.match(appSource, /foreground poll 会自动领取/);
     assert.match(appSource, /请保持启动 Dorey 的 turn 运行/);
     assert.match(appSource, /Agent 状态/);
+    assert.match(appSource, /type ReviewLifecycleState =/);
+    assert.match(
+      appSource,
+      /type ReviewLifecycleState =[\s\S]*?"listening"[\s\S]*?"queued"[\s\S]*?"working"[\s\S]*?"completed"[\s\S]*?"review_closed"/,
+    );
+    assert.match(appSource, /评审链路/);
+    assert.match(appSource, /data-state=\{reviewLifecycleState\}/);
+    assert.match(appSource, /已排队，等待 Agent 领取/);
+    assert.match(appSource, /Agent 已领取，正在处理/);
+    assert.match(appSource, /修订已返回，等待接受/);
+    assert.match(appSource, /评审已结束，不再领取新任务/);
     assert.match(appSource, /结束评审/);
     assert.match(appSource, /\/api\/dorey\/review/);
     assert.match(appSource, /fetchLatestUnacknowledgedSubmission/);
@@ -263,6 +274,12 @@ describe("review workspace UI contract", () => {
     assert.match(appSource, /const canSubmit =\s*hasSubmitContent &&/s);
     assert.match(appSource, /全文评论（可选）/);
     assert.match(appSource, /评论队列或全文评论有内容即可提交/);
+    assert.match(appSource, /aria-label="清空全文评论"/);
+    assert.match(appSource, /onClick=\{\(\) => setGlobalInstruction\(""\)\}/);
+    assert.doesNotMatch(appSource, /aria-label="评论类型"/);
+    assert.doesNotMatch(appSource, /aria-label="草稿评论类型"/);
+    assert.doesNotMatch(appSource, /澄清|纠错|改写|补充信息|结构调整/);
+    assert.doesNotMatch(styles, /\.category-pill/);
     assert.match(appSource, /只显示会影响提交去向的信息/);
     assert.match(appSource, /调试详情/);
     assert.match(styles, /\.compact-popover \.icon-button\.primary\s*{[^}]*justify-self:\s*center;[^}]*min-height:\s*30px;[^}]*width:\s*auto;/s);
@@ -281,6 +298,26 @@ describe("review workspace UI contract", () => {
     assert.match(workflowClient, /"codex" \| "traex" \| "manual"/);
     assert.match(styles, /\.source-editor\s*{/);
     assert.match(styles, /\.source-editor textarea\s*{/);
+  });
+
+  it("clears comments only after accepted source writeback succeeds", async () => {
+    const appSource = await readFile("src/app/App.tsx", "utf8");
+    const acceptStart = appSource.indexOf("async function acceptRevised()");
+    const acceptEnd = appSource.indexOf("function resetDemo()", acceptStart);
+    const acceptSource = appSource.slice(acceptStart, acceptEnd);
+
+    assert.ok(acceptStart > -1);
+    assert.ok(acceptEnd > acceptStart);
+    assert.match(acceptSource, /await saveWorkflowReviewResult\(/);
+    assert.match(acceptSource, /catch \(error\) \{[\s\S]*?setSubmitError\([\s\S]*?return;[\s\S]*?\}/);
+    assert.ok(
+      acceptSource.indexOf("await saveWorkflowReviewResult(") <
+        acceptSource.indexOf("clearQueue()"),
+    );
+    assert.ok(
+      acceptSource.indexOf("clearQueue()") <
+        acceptSource.indexOf("setAgentResult(null)"),
+    );
   });
 
   it("documents the public review launch and poll contracts", async () => {

@@ -25,11 +25,15 @@
     "build:lib": "tsc -p tsconfig.json && chmod +x dist/src/server/revision-agent-poll-cli.js",
     "build:web": "vite build",
     "test": "npm run clean && npm run build:lib && node --test \"dist/tests/**/*.test.js\"",
+    "test:browser": "playwright test",
+    "test:regression": "npm run test:regression:protocol && npm run test:browser",
+    "test:regression:protocol": "npm run clean && npm run build:lib && node --test dist/tests/review-lifecycle-regression.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.app.json --noEmit",
     "agent:poll": "npm run build:lib && node dist/src/server/revision-agent-poll-cli.js poll",
     "generate:demo": "npm run build:lib && node dist/scripts/generate-demo-task.js"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
