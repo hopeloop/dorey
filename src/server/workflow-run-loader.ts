@@ -1,10 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import {
   mkdir,
+  open,
   readFile,
   readdir,
+  rename,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -61,7 +64,15 @@ export type WorkflowRunManifest = {
     writeRoot?: string;
   };
   source?: {
+    files?: Record<
+      string,
+      {
+        relativePath?: string;
+        sha256?: string;
+      }
+    >;
     mode?: "single-file" | "folder" | "demo";
+    rootPath?: string;
   };
 };
 
@@ -139,7 +150,22 @@ export type WriteWorkflowReviewResultInput = {
 export type WorkflowReviewResult = {
   acceptedRevisionPath: string;
   reviewResultPath: string;
+  sourceWriteBack:
+    | {
+        sourcePath: string;
+        status: "written";
+      }
+    | {
+        status: "not-configured";
+      };
 };
+
+export class WorkflowSourceConflictError extends Error {
+  constructor(sourcePath: string) {
+    super(`原文件在评审期间已被修改，未写回修订：${sourcePath}`);
+    this.name = "WorkflowSourceConflictError";
+  }
+}
 
 type ArtifactMapping = Omit<
   NormalizedWorkflowArtifact,
@@ -641,6 +667,50 @@ export async function writeWorkflowReviewResult({
 }: WriteWorkflowReviewResultInput): Promise<WorkflowReviewResult> {
   const run = await findRunByKey(root, runKey);
   const artifact = findTopLevelArtifact(run, artifactId);
+  const manifest = parseWorkflowRunManifest(
+    JSON.parse(await readFile(run.manifestPath, "utf8")),
+  );
+  const sourceTarget = resolveSourceWriteBackTarget(manifest, artifact.relativePath);
+  const revisedSha256 = sha256(response.revisedMarkdown);
+  let sourceWriteBack: WorkflowReviewResult["sourceWriteBack"] = {
+    status: "not-configured",
+  };
+
+  if (sourceTarget) {
+    let currentContent: Buffer;
+
+    try {
+      currentContent = await readFile(sourceTarget.sourcePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new WorkflowSourceConflictError(sourceTarget.sourcePath);
+      }
+
+      throw error;
+    }
+
+    const currentSha256 = sha256(currentContent);
+
+    if (currentSha256 !== sourceTarget.sha256 && currentSha256 !== revisedSha256) {
+      throw new WorkflowSourceConflictError(sourceTarget.sourcePath);
+    }
+
+    if (currentSha256 !== revisedSha256) {
+      await atomicWriteText(sourceTarget.sourcePath, response.revisedMarkdown);
+    }
+
+    await atomicWriteText(
+      resolveWorkflowRelativePath(run.effectiveRunRoot, artifact.relativePath),
+      response.revisedMarkdown,
+    );
+    sourceTarget.entry.sha256 = revisedSha256;
+    await atomicWriteJson(run.manifestPath, manifest);
+    sourceWriteBack = {
+      sourcePath: sourceTarget.sourcePath,
+      status: "written",
+    };
+  }
+
   const writeDir = await ensureArtifactReviewDir(run, artifact.id);
   const revisedFilename = artifact.kind === "html" ? "revised.html" : "revised.md";
   const revisedPath = toRunRelativePath(
@@ -666,13 +736,91 @@ export async function writeWorkflowReviewResult({
     latestRevisionResponsePath,
     runId: run.runId,
     sourceMarkdownPath: artifact.relativePath,
+    sourceWriteBack,
     summary: response.summary,
   });
 
   return {
     acceptedRevisionPath: revisedPath,
     reviewResultPath,
+    sourceWriteBack,
   };
+}
+
+function resolveSourceWriteBackTarget(
+  manifest: WorkflowRunManifest,
+  artifactRelativePath: string,
+):
+  | {
+      entry: { relativePath?: string; sha256?: string };
+      sha256: string;
+      sourcePath: string;
+    }
+  | undefined {
+  const source = manifest.source;
+  const entry = source?.files?.[artifactRelativePath];
+
+  if (!entry) {
+    return undefined;
+  }
+
+  if (!source?.rootPath || !path.isAbsolute(source.rootPath)) {
+    throw new Error("Workflow source rootPath must be an absolute path.");
+  }
+
+  if (
+    typeof entry.relativePath !== "string" ||
+    path.isAbsolute(entry.relativePath) ||
+    typeof entry.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(entry.sha256)
+  ) {
+    throw new Error(`Workflow source mapping is invalid: ${artifactRelativePath}`);
+  }
+
+  const sourceRoot = path.resolve(source.rootPath);
+  const sourcePath = path.resolve(sourceRoot, entry.relativePath);
+  const relative = path.relative(sourceRoot, sourcePath);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Workflow source path is outside source root: ${entry.relativePath}`);
+  }
+
+  return {
+    entry,
+    sha256: entry.sha256,
+    sourcePath,
+  };
+}
+
+function sha256(content: string | Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+async function atomicWriteText(filePath: string, content: string): Promise<void> {
+  const existing = await stat(filePath);
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.dorey-${process.pid}-${randomUUID()}.tmp`,
+  );
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+
+  try {
+    handle = await open(temporaryPath, "wx", existing.mode);
+    await handle.chmod(existing.mode);
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporaryPath, filePath);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
+  await atomicWriteText(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function parseWorkflowRunManifest(value: unknown): WorkflowRunManifest {

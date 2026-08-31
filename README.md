@@ -9,7 +9,7 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 >
 > **欢迎共建新的 Agent 适配。** 如果你希望接入 Cursor、Claude Code 或其他 Agent 工具，可以基于现有 adapter 提交 MR，补齐会话识别、评论队列 poll 和修订结果回传能力。
 
-它的目标很简单：把 Markdown 技术文档放进一个本地 Web 工作台里，让人可以像评审文档一样选中文本、加评论、批量提交给当前 AI Agent 会话处理，也可以直接编辑 Markdown 源码，再把修订结果回写到页面和本地 review 目录。
+它的目标很简单：把 Markdown 技术文档放进一个本地 Web 工作台里，让人可以像评审文档一样选中文本、加评论、批量提交给当前 AI Agent 会话处理，也可以直接编辑 Markdown 源码；接受修订后，Dorey 会把结果写回原文件并保留本地 review 记录。
 
 ## 核心能力
 
@@ -52,7 +52,9 @@ dorey --review-file path/to/design.md
 dorey --review-folder path/to/docs
 ```
 
-`--review-file` 接受 Markdown 或 HTML 文件；`--review-folder` 递归加载 `.md` 和 `.markdown`，左侧使用文件树导航。两种模式都会在临时 review workspace 中工作，不直接覆盖源文件。
+`--review-file` 接受 Markdown 或 HTML 文件；`--review-folder` 递归加载 `.md` 和 `.markdown`，左侧使用文件树导航。两种模式都会先复制到临时 review workspace，避免评审中的草稿直接改动原稿；点击“接受修订”时才校验并原子写回对应原文件。
+
+Dorey 会在打开评审时记录原文件的 SHA-256。若原文件在评审期间被其他程序修改，接受操作会返回冲突并保留评论和待接受修订，不会覆盖外部改动。只有原文件写回成功后，页面才标记 accepted 并清空评论。`--demo` 没有原文件，仍只写临时 workspace 和 review 记录。
 
 交互模式会在启动后保持 foreground poll。请让启动 Dorey 的 Agent turn 和命令会话持续运行，直到页面执行“结束评审”；这样用户点击 Submit 后会由同一个原会话自动收到反馈，不需要再输入 `poll`。
 
@@ -68,14 +70,14 @@ Demo 模式会在临时目录生成一组内置文档，并在页面内明确提
 
 ## 安装 Agent Skill
 
-仓库内提供与 foreground poll 协议配套的 `dorey-review-loop` skill。Codex 用户可以安装到个人 skills 目录：
+仓库内提供轻量的 `dorey` 参考 skill，只说明 Dorey 是什么、常用命令和启动时的可见生命周期。Codex 用户可以安装到个人 skills 目录：
 
 ```bash
 mkdir -p ~/.codex/skills
-cp -R skills/dorey-review-loop ~/.codex/skills/
+cp -R skills/dorey ~/.codex/skills/
 ```
 
-Skill 会指导 Agent 正确选择 `--review-file` / `--review-folder`，保留启动命令的 PTY，并在每轮 reply 后继续等待。`dorey poll --check` 仅用于一次性诊断或恢复检查，不会唤醒已经结束的 Agent turn。
+Skill 不承载一套独立的 review-loop 工作流；Dorey 自己负责队列、状态和恢复。它让 Agent 能发现正确入口，并知道交互启动命令需要保持运行。遇到不确定状态时直接运行 `dorey doctor` 获取当前生命周期和下一步操作。
 
 默认地址：
 
@@ -110,13 +112,13 @@ http://127.0.0.1:5173/
 2. 在左侧文件树选择一个 Markdown 文档。
 3. 在渲染后的文档中选中文本。
 4. 点击 `添加评论`。
-5. 输入评论内容，选择评论类型，点击 `添加`。
+5. 输入评论内容，点击 `添加`。
 6. 多条评论会进入右侧评论队列。
 7. 点击 `提交全部`。
 8. Dorey 会把完整 payload 写到 `.local/dorey-submissions/<review>/active/.../payload.json`，并把本次请求排队给原 Agent 会话。
 9. 原会话里的 `dorey poll` 收到 payload 后，根据评论修订 Markdown，并把 `BatchRevisionResponse` POST 回页面给出的 reply endpoint。
 10. 页面展示 `本次返回`、`已处理评论`、`修订信息`、`差异`。
-11. 点击 `接受修订` 后，当前文档更新，评论队列清空，run history 记录为 accepted。
+11. 点击 `接受修订` 后，Dorey 先校验并原子写回原文件；成功后当前文档更新、评论队列清空，run history 记录为 accepted。若检测到原文件已被外部修改，则保持待接受状态并提示冲突。
 
 如果只是想删掉一段话或改几个字，也可以在 Markdown 文档上点击 `编辑 Markdown`，修改源码后点击 `保存为修订`；页面会生成普通修订、展示 diff，并在 `接受修订` 后写入 review 结果。
 
@@ -150,6 +152,7 @@ dorey --review-file README.md # review 单个 Markdown 文档
 dorey --review-folder path/to/docs # review 文件夹下的 Markdown 文档
 dorey --demo                  # 打开 Dorey 自带产品 demo
 dorey poll                    # 在原 Agent session 中前台等待 submit payload
+dorey doctor                  # 诊断 lifecycle、target、队列并给出下一步操作
 dorey status                  # 查看 server health、workspace root、launcher context
 dorey stop                    # 停止后台 Web server
 ```
@@ -204,7 +207,7 @@ workflow-root/
     review/
 ```
 
-`documents/` 保留文件夹内的相对目录。Markdown 中的 `assets/example.png` 会相对于当前 Markdown 解析，图片请求只能读取临时 workspace 内受支持的图片类型。
+`documents/` 保留文件夹内的相对目录。Markdown 中的 `assets/example.png` 会相对于当前 Markdown 解析，图片请求只能读取临时 workspace 内受支持的图片类型。对于 `--review-file` 和 `--review-folder`，`workflow-run.json` 还会记录受限的 artifact → 原文件相对路径映射、原文件根目录和打开时的 SHA-256，供接受修订时做冲突检测。
 
 Web server 内部读取：
 
@@ -226,7 +229,7 @@ runRoot/review/<artifactId>/
   revised.md
 ```
 
-原始 artifact 文件不会被直接覆盖。
+评审和生成修订阶段不会直接覆盖原文件。点击“接受修订”后，`--review-file` / `--review-folder` 对应的原文件会在 hash 校验通过后原子替换，同时更新临时 artifact 和上述 hash；普通 workflow artifact 与 `--demo` 没有源文件映射，仍只写 `review/` 记录。
 
 ## Agent 返回格式
 
@@ -305,13 +308,13 @@ tests/
 - PlantUML fenced code block 渲染为 inline SVG。
 - 稳定 `data-block-id`，覆盖 heading、paragraph、list item、blockquote、code block、table、table row。
 - 单 block 文本选择，记录 quote、blockId、startOffset、endOffset、prefix、suffix。
-- 评论队列：新增、编辑、删除、清空、分类、批量提交。
+- 评论队列：新增、编辑、删除、清空、批量提交。
 - Codex Desktop / Codex CLI / TraeX CLI queued submit flow。
 - 原会话 poll/reply 闭环，不启动隐藏 `resume` 子进程。
 - Session context editor：任务目标、阶段、上下文摘要、启动上下文、accepted history。
 - Batch revision result：摘要、逐条处理、修订 Markdown、渲染态 diff。
 - Markdown source editor：直接编辑当前 Markdown 源码，保存为 manual revision 并复用 diff / accept / review 写回链路。
-- Accept：更新当前 artifact，清空评论队列，记录 accepted run。
+- Accept：先校验并原子写回 `--review-file` / `--review-folder` 原文件；成功后更新当前 artifact、清空评论队列并记录 accepted run，冲突或写入失败则保留待接受状态。
 - 单文档启动：显式 `--review-file` materialize 一次临时文档 workspace。
 - 文件夹启动：显式 `--review-folder` 递归展示 Markdown 文件树，并支持相对图片资源。
 - `--demo` 只打开内置 demo，不扫描调用目录。

@@ -362,6 +362,7 @@ describe("workflow run loader", () => {
     });
 
     assert.equal(accepted.acceptedRevisionPath, "review/document-draft/revised.md");
+    assert.deepEqual(accepted.sourceWriteBack, { status: "not-configured" });
     assert.equal(
       await readFile(path.join(run.effectiveRunRoot, "document/document-draft.md"), "utf8"),
       original,

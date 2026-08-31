@@ -5,6 +5,7 @@ import {
   listWorkflowRuns,
   readWorkflowRunArtifact,
   readWorkflowRunAsset,
+  WorkflowSourceConflictError,
   writeWorkflowReviewResult,
   writeWorkflowRevisionTrace,
   type WorkflowReviewResult,
@@ -35,7 +36,7 @@ export type WorkflowRunHttpResponse =
       contentType: string;
     }
   | {
-      status: 400 | 404 | 405 | 500;
+      status: 400 | 404 | 405 | 409 | 500;
       body: { error: string };
     };
 
@@ -140,7 +141,7 @@ export async function handleWorkflowRunRequest({
     return { status: 405, body: { error: "Method not allowed." } };
   } catch (error) {
     return {
-      status: 500,
+      status: error instanceof WorkflowSourceConflictError ? 409 : 500,
       body: { error: error instanceof Error ? error.message : String(error) },
     };
   }
