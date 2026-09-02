@@ -1,6 +1,6 @@
 ---
 name: dorey
-description: Use when a task mentions Dorey, opens a document for review, checks status, or diagnoses a launch or queued submission.
+description: Use only when the user explicitly mentions Dorey; explicitly asks to use Dorey to review a file or directory; queries the status of a Dorey server or Dorey review; or operates or troubleshoots an existing Dorey review or port.
 ---
 
 # Dorey
