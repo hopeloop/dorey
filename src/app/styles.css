@@ -616,7 +616,40 @@ button:disabled {
 
 .comment-item-actions {
   flex: 0 0 auto;
-  margin-left: auto;
+}
+
+.comment-item-meta,
+.result-comment-meta {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.comment-item-meta small {
+  color: #657282;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comment-kind-badge {
+  border-radius: 999px;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 4px 6px;
+}
+
+.comment-kind-revision {
+  background: #eaf0ff;
+  color: #2458d3;
+}
+
+.comment-kind-explanation {
+  background: #fff3dc;
+  color: #9a5b05;
 }
 
 .comment-item-actions .icon-only {
@@ -670,6 +703,39 @@ button:disabled {
 .comment-edit-area {
   display: grid;
   gap: 6px;
+}
+
+.comment-kind-control {
+  background: #eef2f7;
+  border: 1px solid #d8dee7;
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  padding: 2px;
+}
+
+.comment-kind-control button {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #657282;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 28px;
+  padding: 4px 10px;
+}
+
+.comment-kind-control button.active {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(23, 32, 42, 0.14);
+  color: #2458d3;
+}
+
+.comment-kind-help {
+  color: #657282;
+  font-size: 11px;
+  margin: -4px 0 0;
 }
 
 .comment-item textarea,
@@ -938,6 +1004,14 @@ button:disabled {
   color: #536170;
   font-size: 13px;
   margin: 0;
+}
+
+.conversation-reply-notice {
+  color: #536170;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0;
+  text-align: right;
 }
 
 .warning-message {

@@ -111,14 +111,14 @@ http://127.0.0.1:5173/
 1. 使用 `dorey --review-file <file>`、`dorey --review-folder <folder>` 或 `dorey --demo` 打开 Dorey Web UI。
 2. 在左侧文件树选择一个 Markdown 文档。
 3. 在渲染后的文档中选中文本。
-4. 点击 `添加评论`。
-5. 输入评论内容，点击 `添加`。
-6. 多条评论会进入右侧评论队列。
-7. 点击 `提交全部`。
+4. 点击 `评论`，选择 `修订`（默认）或 `解释`。
+5. 输入评论内容，点击 `添加修订` 或 `添加解释`。
+6. 多条评论会进入右侧评论队列，并显示对应类型。
+7. 点击 `提交修订`、`提交问题` 或混合场景下的 `提交全部`。
 8. Dorey 会把完整 payload 写到 `.local/dorey-submissions/<review>/active/.../payload.json`，并把本次请求排队给原 Agent 会话。
-9. 原会话里的 `dorey poll` 收到 payload 后，根据评论修订 Markdown，并把 `BatchRevisionResponse` POST 回页面给出的 reply endpoint。
-10. 页面展示 `本次返回`、`已处理评论`、`修订信息`、`差异`。
-11. 点击 `接受修订` 后，Dorey 先校验并原子写回原文件；成功后当前文档更新、评论队列清空，run history 记录为 accepted。若检测到原文件已被外部修改，则保持待接受状态并提示冲突。
+9. 原会话里的 `dorey poll` 收到 payload 后，先在原 Agent 对话中直接回答解释型评论，再应用修订型评论，并把 `BatchRevisionResponse` POST 回页面给出的 reply endpoint。
+10. Dorey 不展示解释正文，只显示“已在原 Agent 对话中回答”的轻量回执；有文档修改时才展示修订、差异和接受按钮。
+11. 有修订时点击 `接受修订`，Dorey 会先校验并原子写回原文件；成功后当前文档更新、修订评论清空，run history 记录为 accepted。若检测到原文件已被外部修改，则保持待接受状态并提示冲突。
 
 如果只是想删掉一段话或改几个字，也可以在 Markdown 文档上点击 `编辑 Markdown`，修改源码后点击 `保存为修订`；页面会生成普通修订、展示 diff，并在 `接受修订` 后写入 review 结果。
 
@@ -233,6 +233,11 @@ runRoot/review/<artifactId>/
 
 ## Agent 返回格式
 
+`QueuedComment.kind` 支持两种值：
+
+- `revision`：要求修改 Markdown，也是字段缺失时的默认行为。
+- `explanation`：在原 Agent 对话中回答问题，不得因此修改 Markdown。纯解释请求返回的 `revisedMarkdown` 必须与原文完全一致。
+
 原 Agent 会话收到 payload 后，需要返回 `BatchRevisionResponse`：
 
 ```json
@@ -252,7 +257,7 @@ runRoot/review/<artifactId>/
 
 - `revisedMarkdown`：完整修订后的 Markdown 文本。
 - `summary`：本次修改摘要。
-- `addressedComments`：逐条说明每个评论如何处理。
+- `addressedComments`：逐条记录每个评论如何处理，供完成状态和 review trace 使用。解释正文由原 Agent 对话承载，Dorey 页面不重复展示。
 
 ## 项目结构
 

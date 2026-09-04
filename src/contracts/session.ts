@@ -55,7 +55,11 @@ export type ContextSnapshot = {
   priorAcceptedRevisionSummaries: string[];
 };
 
-export type ReviewRunStatus = "proposed" | "accepted" | "rejected";
+export type ReviewRunStatus =
+  | "proposed"
+  | "accepted"
+  | "rejected"
+  | "completed";
 
 export type ReviewRunRecord = {
   id: string;

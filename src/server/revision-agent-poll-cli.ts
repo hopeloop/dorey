@@ -343,8 +343,16 @@ export function formatRevisionAgentPollFeedback(
       payloadPath: result.payloadPath,
       replyCommand: result.replyCommand,
       agentPollCommand: result.agentPollCommand,
-      nextAction: "revise_markdown_and_post_batch_response",
+      nextAction:
+        "answer_explanations_in_original_conversation_then_apply_revisions_and_post_batch_response",
       nextStep: result.nextStep,
+      commentKindSemantics: {
+        revision: "修改 Markdown；评论缺少 kind 时也按 revision 处理",
+        explanation:
+          "先在原 Agent 对话中直接回答用户；addressedComments.resolution 仍保留处理记录，但 Dorey 不展示解释正文；不修改 Markdown",
+        explanationOnly:
+          "没有 revision 评论且 globalInstruction 为空时，revisedMarkdown 必须与 artifact.markdown 完全一致",
+      },
       expectedResponseShape: {
         revisedMarkdown: "完整修订后的 Markdown 文本",
         summary: "本次修改摘要",

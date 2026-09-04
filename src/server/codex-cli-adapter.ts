@@ -62,11 +62,15 @@ export function buildCodexRevisionPrompt(
   req: BatchRevisionRequest,
 ): string {
   return [
-    "You revise the provided Markdown artifact according to queued review comments.",
+    "You handle queued review comments for the provided Markdown artifact.",
     "",
     "Do not edit files, run commands, or describe plans. Work only from the JSON request below.",
     "Return a complete revised Markdown artifact, not a patch.",
-    "Apply every comment that can be reasonably addressed. Preserve Markdown structure and tone.",
+    "Treat a comment with kind=revision, or with no kind, as a request to revise the Markdown.",
+    "Treat a comment with kind=explanation as a question: answer it in addressedComments.resolution and do not change the Markdown because of it.",
+    "If there are no revision comments and globalInstruction is empty, revisedMarkdown must exactly equal artifact.markdown.",
+    "For mixed requests, apply revision comments and answer explanation comments in the same response.",
+    "Apply every revision comment that can be reasonably addressed. Preserve Markdown structure and tone.",
     "If a comment cannot be applied, keep the markdown coherent and explain that in addressedComments.",
     "Do not append review metadata unless the user explicitly asked for it.",
     "Your final answer must conform to the supplied JSON schema with revisedMarkdown, summary, and addressedComments.",

@@ -5,6 +5,8 @@ export type CommentCategory =
   | "missing_info"
   | "structure";
 
+export type CommentKind = "revision" | "explanation";
+
 export type CommentAnchor = {
   blockId: string;
   startOffset: number;
@@ -20,6 +22,7 @@ export type QueuedComment = {
   anchor: CommentAnchor;
   body: string;
   category?: CommentCategory;
+  kind?: CommentKind;
   status: "queued" | "submitted" | "resolved";
   createdAt: string;
 };

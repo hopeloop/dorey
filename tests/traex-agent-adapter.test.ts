@@ -86,8 +86,11 @@ describe("TraeX CLI adapter prompt and schema", () => {
   it("builds a read-only revision prompt with artifact and queued comments", () => {
     const prompt = buildTraexRevisionPrompt(request);
 
-    assert.match(prompt, /revise the provided Markdown artifact/i);
+    assert.match(prompt, /handle queued review comments/i);
     assert.match(prompt, /Do not edit files/);
+    assert.match(prompt, /kind=revision, or with no kind/);
+    assert.match(prompt, /kind=explanation as a question/);
+    assert.match(prompt, /revisedMarkdown must exactly equal artifact\.markdown/);
     assert.match(prompt, /sample-technical-design:p:4/);
     assert.match(prompt, /复用已有发布链路/);
     assert.match(prompt, /把复用边界和验证证据写清楚/);
