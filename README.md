@@ -20,7 +20,7 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 - 多 Agent 入口：支持 Codex Desktop 原对话、Codex CLI 会话、TraeX CLI 会话。
 - 会话上下文：每个文档至少关联一个 review session，submit payload 会携带任务目标、当前阶段、上下文摘要、关联会话和已接受历史。
 - 修订结果视图：展示摘要、逐条处理结果、修订 Markdown、渲染态 diff，并支持 `接受` 把修订设为当前版本。
-- 页面恢复：刷新或重新打开页面时恢复最近一条未确认 submission；结果应用成功后写入 acknowledge，避免 completed response 重复回放。
+- 页面恢复：刷新或重新打开页面时恢复最近一条未确认 submission；纯解释或无改动结果展示后写入 acknowledge；有改动的结果保留到接受写回成功，刷新后仍可查看差异和接受，接受后不再重复回放。
 - 文件与文件夹入口：CLI 显式传入 `--review-file <file>`、`--review-folder <folder>` 或 `--demo`；文件夹模式递归列出 Markdown，并在左侧显示文件树。
 - 本地图片：Markdown 的相对图片路径会从当前文档所在目录解析，并通过 Dorey 的受限图片端点加载。
 - Mermaid / PlantUML 渲染：Markdown 中的 `mermaid` 和 `plantuml` fenced code block 会在编辑器里渲染为 inline SVG，并保留源码展开与错误回退能力。

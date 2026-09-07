@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { createServer, type ViteDevServer } from "vite";
+
+import { prepareDoreyLaunchWorkspace } from "../../src/server/revision-agent-poll-cli.js";
 
 import { createWorkflowRunFixture } from "../workflow-run-test-fixture.js";
 
@@ -110,9 +112,13 @@ test("DOR-BROWSER-P0-001: submit -> foreground feedback -> reply -> automatic UI
         const body = (await response.json()) as { submissions?: unknown[] };
         return body.submissions?.length;
       })
-      .toBe(0);
+      .toBe(1);
 
     await page.getByRole("button", { name: "接受修订" }).click();
+    await expect.poll(async () => {
+      const response = await fetch(`${baseUrl}/api/agent/submissions?target=${encodeURIComponent(targetKey)}&unacknowledged=1`);
+      return (await response.json()).submissions.length;
+    }).toBe(0);
 
     closePollController = new AbortController();
     const closePoll = fetch(
@@ -260,12 +266,146 @@ test("explanation comments are acknowledged in Dorey and answered in the origina
     await expect(page.getByRole("button", { name: "接受修订" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "查看差异" })).toHaveCount(0);
     await expect(page.getByText("0 条修订 · 0 条解释")).toBeVisible();
+    await expect.poll(async () => {
+      const response = await fetch(`${baseUrl}/api/agent/submissions?target=${encodeURIComponent(targetKey)}&unacknowledged=1`);
+      return (await response.json()).submissions.length;
+    }).toBe(0);
+    await page.reload();
+    await expect(sourceParagraph).toBeVisible();
+    await expect(page.getByRole("button", { name: "接受修订" })).toHaveCount(0);
   } finally {
     await server?.close();
     restoreEnv(previousEnv);
     await rm(workspaceRoot, { force: true, recursive: true });
   }
 });
+
+
+for (const mode of ["accept", "conflict", "ack-retry", "resubmit"]) {
+  test(`DOR-P0-008: mixed revision survives refresh (${mode})`, async ({ page }) => {
+    const root = await mkdtemp(path.join(tmpdir(), "dorey-pending-revision-"));
+    const sourcePath = path.join(root, "review.md");
+    const original = "# Recovery test\n\nReview requires submission and acceptance.\n";
+    const revised = original.replace("submission and acceptance", "submission, processing and acceptance");
+    await writeFile(sourcePath, original);
+    const launch = await prepareDoreyLaunchWorkspace({ launchMode: "single-file", reviewFilePath: sourcePath });
+    const previousEnv = captureEnv([
+      "AI_CODING_WORKFLOW_ROOT", "CODEX_THREAD_ID", "DOREY_AUTO_STOP_ON_REPLY",
+      "DOREY_DELIVERY_MODE", "DOREY_LAUNCH_MODE", "DOREY_PREVIEW_ONLY",
+      "DOREY_STATE_ROOT", "DOREY_WORKSPACE_ROOT",
+    ]);
+    let server: ViteDevServer | undefined;
+    try {
+      process.env.AI_CODING_WORKFLOW_ROOT = launch.workflowRoot;
+      process.env.CODEX_THREAD_ID = "browser-regression-thread";
+      process.env.DOREY_AUTO_STOP_ON_REPLY = "0";
+      process.env.DOREY_DELIVERY_MODE = "foreground";
+      process.env.DOREY_LAUNCH_MODE = "single-file";
+      process.env.DOREY_PREVIEW_ONLY = "0";
+      process.env.DOREY_STATE_ROOT = path.join(root, "state");
+      process.env.DOREY_WORKSPACE_ROOT = launch.workspaceRoot;
+      server = await createServer({
+        configFile: path.resolve("vite.config.ts"),
+        server: { host: "127.0.0.1", port: 0, strictPort: false },
+      });
+      await server.listen();
+      const baseUrl = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
+      const pendingResults = async () => {
+        const response = await fetch(`${baseUrl}/api/agent/submissions?target=${encodeURIComponent(targetKey)}&unacknowledged=1`);
+        return (await response.json()).submissions as Array<{ requestId: string; status: string }>;
+      };
+      await page.goto(baseUrl);
+      const paragraph = page.locator(".review-markdown").getByText("Review requires submission and acceptance.", { exact: true });
+      await expect(paragraph).toBeVisible();
+      for (const kind of ["修订", "解释"]) {
+        await paragraph.evaluate((element) => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          const selection = window.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+          element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+        });
+        await page.getByRole("button", { name: "评论", exact: true }).click();
+        await page.getByRole("group", { name: "评论类型" }).getByRole("button", { name: kind, exact: true }).click();
+        await page.getByRole("textbox", { name: kind === "修订" ? "说明希望如何修改" : "你想了解什么？" }).fill(kind === "修订" ? "Add processing to the review steps." : "Why is acceptance required?");
+        await page.getByRole("button", { name: `添加${kind}` }).click();
+      }
+      const poll = fetch(`${baseUrl}/api/agent/poll?target=${encodeURIComponent(targetKey)}&clientId=recovery-browser&timeoutMs=30000`);
+      await expect(page.getByText(/正在监听/)).toBeVisible();
+      await page.getByRole("button", { name: "提交全部" }).click();
+      const feedback = await (await poll).json();
+      expect(feedback.request.comments.map((comment: { kind: string }) => comment.kind)).toEqual(["revision", "explanation"]);
+      const reply = await fetch(`${baseUrl}/api/agent/submissions/${feedback.requestId}/reply`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          revisedMarkdown: revised, summary: "Added processing; answered in the original conversation.",
+          addressedComments: feedback.request.comments.map((comment: { id: string; kind: string }) => ({
+            commentId: comment.id, resolution: comment.kind === "revision" ? "Added processing." : "Explanation must stay in the original conversation.",
+          })),
+        }),
+      });
+      expect(reply.ok).toBe(true);
+      await expect(page.getByRole("button", { name: "接受修订" })).toBeVisible();
+      expect(await readFile(sourcePath, "utf8")).toBe(original);
+      // This was the missing boundary: the result has already reached the UI.
+      await page.reload();
+      await expect(page.getByRole("button", { name: "接受修订" })).toBeVisible();
+      await expect(page.getByText("Review requires submission, processing and acceptance.", { exact: true })).toBeVisible();
+      await expect(page.getByText("1 条修订 · 0 条解释")).toBeVisible();
+      await expect(page.getByText("1 个问题已在原 Agent 对话中回答。", { exact: true })).toBeVisible();
+      await expect(page.getByText("Explanation must stay in the original conversation.", { exact: true })).toHaveCount(0);
+      expect(await pendingResults()).toEqual([expect.objectContaining({ requestId: feedback.requestId, status: "completed" })]);
+      if (mode === "resubmit") {
+        const nextPoll = fetch(`${baseUrl}/api/agent/poll?target=${encodeURIComponent(targetKey)}&clientId=recovery-browser&timeoutMs=30000`);
+        await page.getByRole("button", { name: "提交修订" }).click();
+        const nextFeedback = await (await nextPoll).json();
+        expect(nextFeedback.requestId).not.toBe(feedback.requestId);
+        const nextReply = await fetch(`${baseUrl}/api/agent/submissions/${nextFeedback.requestId}/reply`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ revisedMarkdown: revised, summary: "Newer proposal.", addressedComments: [] }),
+        });
+        expect(nextReply.ok).toBe(true);
+        await expect(page.getByText("Newer proposal.", { exact: true }).first()).toBeVisible();
+        expect(await pendingResults()).toHaveLength(2);
+      }
+      await page.getByRole("button", { name: "查看差异" }).click();
+      await expect(page.locator(".diff-view")).toBeVisible();
+      if (mode === "conflict") {
+        await writeFile(sourcePath, "# External edit\n");
+        await page.getByRole("button", { name: "接受修订" }).click();
+        await expect(page.getByText(/接受修订写回失败/)).toBeVisible();
+        expect(await readFile(sourcePath, "utf8")).toBe("# External edit\n");
+        await page.reload();
+        await expect(page.getByRole("button", { name: "接受修订" })).toBeVisible();
+        expect(await pendingResults()).toHaveLength(1);
+        await writeFile(sourcePath, original);
+      }
+      if (mode === "ack-retry") {
+        await page.route("**/acknowledge", (route) => route.fulfill({ status: 503, body: "temporary acknowledgement failure" }));
+        await page.getByRole("button", { name: "接受修订" }).click();
+        await expect(page.getByText(/修订已写回，但确认结果失败/)).toBeVisible();
+        expect(await readFile(sourcePath, "utf8")).toBe(revised);
+        expect(await pendingResults()).toHaveLength(1);
+        await page.unroute("**/acknowledge");
+        await page.reload();
+        await expect(page.getByRole("button", { name: "接受修订" })).toBeVisible();
+      }
+      await page.getByRole("button", { name: "接受修订" }).click();
+      await expect.poll(() => readFile(sourcePath, "utf8")).toBe(revised);
+      await expect.poll(pendingResults).toEqual([]);
+      await page.reload();
+      await expect(page.getByText("Review requires submission, processing and acceptance.", { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "接受修订" })).toHaveCount(0);
+      expect(await pendingResults()).toEqual([]);
+    } finally {
+      await server?.close();
+      restoreEnv(previousEnv);
+      await rm(root, { recursive: true, force: true });
+      await rm(launch.workspaceRoot, { recursive: true, force: true });
+    }
+  });
+}
 
 function captureEnv(keys: string[]): Map<string, string | undefined> {
   return new Map(keys.map((key) => [key, process.env[key]]));
