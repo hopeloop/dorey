@@ -103,6 +103,7 @@ type CommentDraft = {
 };
 
 type AgentResult = {
+  requestId?: string;
   comments: QueuedComment[];
   sourceMarkdown: string;
   response: BatchRevisionResponse;
@@ -880,16 +881,6 @@ export function App() {
     pending: PendingAgentSubmission,
     response: BatchRevisionResponse,
   ) {
-    const shouldAcknowledge = !pending.requestId.startsWith("direct-");
-    if (appliedSubmissionIdsRef.current.has(pending.requestId)) {
-      if (shouldAcknowledge) await acknowledgeRevisionSubmission(pending.requestId);
-      setPendingSubmission((current) =>
-        current?.requestId === pending.requestId ? null : current,
-      );
-      setPendingSubmissionStatus(null);
-      return;
-    }
-
     const completedAt = new Date().toISOString();
     const containsRevisionIntent = hasRevisionIntent(
       pending.comments,
@@ -903,6 +894,19 @@ export function App() {
     });
     const hasMarkdownChanges =
       pending.sourceMarkdown !== normalizedResponse.revisedMarkdown;
+    // Completed results stay durable and recoverable until their changes are accepted.
+    // Explanation-only and no-change responses have no acceptance step.
+    const shouldAcknowledge =
+      !pending.requestId.startsWith("direct-") && !hasMarkdownChanges;
+    if (appliedSubmissionIdsRef.current.has(pending.requestId)) {
+      if (shouldAcknowledge) await acknowledgeRevisionSubmission(pending.requestId);
+      setPendingSubmission((current) =>
+        current?.requestId === pending.requestId ? null : current,
+      );
+      setPendingSubmissionStatus(null);
+      return;
+    }
+
     const proposedReviewRun = createReviewRunRecord({
       adapter: pending.executionProvider,
       artifactId: pending.artifactId,
@@ -945,6 +949,7 @@ export function App() {
     setAgentResult(
       containsRevisionIntent
         ? {
+            requestId: pending.requestId.startsWith("direct-") ? undefined : pending.requestId,
             comments: pending.comments,
             sourceMarkdown: pending.sourceMarkdown,
             response: normalizedResponse,
@@ -970,9 +975,14 @@ export function App() {
         )
         .map((comment) => comment.id),
     );
-    setQueuedComments((current) =>
-      current.filter((comment) => !completedCommentIds.has(comment.id)),
-    );
+    setQueuedComments((current) => {
+      const remaining = current.filter((comment) => !completedCommentIds.has(comment.id));
+      // A refreshed page starts with an empty queue; restore only revisions still awaiting acceptance.
+      const existingIds = new Set(remaining.map((comment) => comment.id));
+      return [...remaining, ...pending.comments.filter(
+        (comment) => !completedCommentIds.has(comment.id) && !existingIds.has(comment.id),
+      )];
+    });
     appliedSubmissionIdsRef.current.add(pending.requestId);
     if (shouldAcknowledge) await acknowledgeRevisionSubmission(pending.requestId);
     setPendingSubmission((current) =>
@@ -1015,6 +1025,19 @@ export function App() {
         return;
       }
     }
+
+    if (agentResult.requestId) {
+      try {
+        await acknowledgeRevisionSubmission(agentResult.requestId, true);
+      } catch (error) {
+        // Keep the result available for retry. Workflow source writeback is idempotent.
+        setSubmitError(
+          `修订已写回，但确认结果失败，请重试接受：${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
+    }
+    setSubmitError(null);
 
     setArtifacts((current) =>
       current.map((artifact) =>
@@ -2570,10 +2593,14 @@ async function fetchLatestUnacknowledgedSubmission(
   return body.submissions?.[0];
 }
 
-async function acknowledgeRevisionSubmission(requestId: string): Promise<void> {
+async function acknowledgeRevisionSubmission(requestId: string, accepted = false): Promise<void> {
   const response = await fetch(
     `/api/agent/submissions/${encodeURIComponent(requestId)}/acknowledge`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accepted }),
+    },
   );
   if (!response.ok) throw new Error(await readHttpError(response));
 }

@@ -321,7 +321,7 @@ export function createRevisionPollBroker({
       });
   }
 
-  async function acknowledge(requestId: string): Promise<{ acknowledgedAt: string; requestId: string }> {
+  async function acknowledge(requestId: string, { accepted = false }: { accepted?: boolean } = {}): Promise<{ acknowledgedAt: string; requestId: string }> {
     return await runExclusive(async () => {
       const record = records.get(requestId);
       if (!record) throw new Error(`Unknown revision submission: ${requestId}`);
@@ -329,6 +329,20 @@ export function createRevisionPollBroker({
         throw new Error(`Revision submission is not completed: ${requestId}`);
       }
       record.acknowledgedAt ??= now();
+      if (accepted) {
+        // Accepting a newer proposal supersedes earlier completed proposals for this document.
+        // Map order is enqueue order and is preserved in the durable state, including timestamp ties.
+        for (const earlier of records.values()) {
+          if (earlier.requestId === requestId) break;
+          if (
+            earlier.status === "completed" &&
+            earlier.target.key === record.target.key &&
+            earlier.request.artifact.id === record.request.artifact.id
+          ) {
+            earlier.acknowledgedAt ??= record.acknowledgedAt;
+          }
+        }
+      }
       await persistState();
       return { acknowledgedAt: record.acknowledgedAt, requestId };
     });

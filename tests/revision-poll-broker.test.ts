@@ -281,6 +281,53 @@ describe("revision poll broker", () => {
     }
   });
 
+  it("acceptance supersedes only earlier completed proposals for the same target and artifact", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-accept-ack-"));
+    try {
+      let sequence = 0;
+      const broker = createRevisionPollBroker({
+        createId: () => `proposal-${++sequence}`,
+        now: () => "2026-09-07T00:00:00.000Z",
+        payloadRoot,
+      });
+      async function enqueue(artifactId = artifact.id, targetKey = "codex-desktop:thread-1", complete = true) {
+        const queued = await broker.enqueue({
+          baseUrl: "http://127.0.0.1:5175",
+          request: { ...request, artifact: { ...artifact, id: artifactId } },
+          target: { key: targetKey, label: "Codex", provider: "codex", transport: "codex_desktop" },
+        });
+        if (complete) await broker.complete(queued.requestId, {
+          revisedMarkdown: "# Revised\n", summary: "Proposal", addressedComments: [],
+        });
+        return queued.requestId;
+      }
+      const earlier = await enqueue();
+      const otherArtifact = await enqueue("other-document");
+      const otherTarget = await enqueue(artifact.id, "codex-desktop:other-thread");
+      const queued = await enqueue(artifact.id, "codex-desktop:thread-1", false);
+      const accepted = await enqueue();
+      const newer = await enqueue();
+      // An ordinary receipt must not discard an older pending revision.
+      await broker.acknowledge(accepted);
+      assert.equal(broker.getSubmissionStatus(earlier)?.acknowledgedAt, undefined);
+      const invalid = await handleRevisionSubmissionRequest({
+        method: "POST", url: `/${accepted}/acknowledge`, body: JSON.stringify({ accepted: "yes" }),
+      }, { broker });
+      assert.equal(invalid.status, 400);
+      const response = await handleRevisionSubmissionRequest({
+        method: "POST", url: `/${accepted}/acknowledge`, body: JSON.stringify({ accepted: true }),
+      }, { broker });
+      assert.equal(response.status, 200);
+      assert.ok(broker.getSubmissionStatus(earlier)?.acknowledgedAt);
+      assert.ok(broker.getSubmissionStatus(accepted)?.acknowledgedAt);
+      const restored = createRevisionPollBroker({ payloadRoot });
+      assert.deepEqual(new Set(restored.listSubmissionStatuses({ unacknowledgedOnly: true }).map((item) => item.requestId)),
+        new Set([otherArtifact, otherTarget, queued, newer]));
+    } finally {
+      await rm(payloadRoot, { force: true, recursive: true });
+    }
+  });
+
   it("lists and acknowledges completed submissions for one-time UI recovery", async () => {
     const payloadRoot = await mkdtemp(path.join(tmpdir(), "review-ack-"));
 
