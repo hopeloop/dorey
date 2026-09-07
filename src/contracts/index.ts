@@ -7,6 +7,7 @@ export {
 export type {
   CommentAnchor,
   CommentCategory,
+  CommentKind,
   QueuedComment,
 } from "./comment.js";
 export type {

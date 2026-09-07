@@ -1105,7 +1105,14 @@ describe("revision agent poll CLI", () => {
     assert.equal(parsed.requestId, "submit-1");
     assert.equal(parsed.payloadPath, "/tmp/payload.json");
     assert.equal(parsed.replyCommand.includes("/reply"), true);
-    assert.equal(parsed.nextAction, "revise_markdown_and_post_batch_response");
+    assert.equal(
+      parsed.nextAction,
+      "answer_explanations_in_original_conversation_then_apply_revisions_and_post_batch_response",
+    );
+    assert.match(parsed.commentKindSemantics.revision, /缺少 kind/);
+    assert.match(parsed.commentKindSemantics.explanation, /不修改 Markdown/);
+    assert.match(parsed.commentKindSemantics.explanation, /原 Agent 对话/);
+    assert.match(parsed.commentKindSemantics.explanation, /Dorey 不展示解释正文/);
   });
 
   it("keeps default poll alive after feedback so later submits are received", async () => {

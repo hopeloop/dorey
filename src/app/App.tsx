@@ -31,6 +31,7 @@ import type {
   BatchRevisionResponse,
   BatchRevisionSubmitResponse,
   CliSessionKind,
+  CommentKind,
   ContextSnapshot,
   QueuedRevisionSubmission,
   QueuedComment,
@@ -48,6 +49,11 @@ import type {
 import { CodexCliAgentAdapter } from "../review/codex-cli-agent-adapter.js";
 import { CodexDesktopAgentAdapter } from "../review/codex-desktop-agent-adapter.js";
 import { createRenderedDiff, type RenderedDiffEntry } from "../review/diff.js";
+import {
+  getCommentKind,
+  hasRevisionIntent,
+  normalizeCommentResponse,
+} from "../review/comment-kind.js";
 import { getPopoverPosition } from "../review/popover-position.js";
 import { TraexAgentAdapter } from "../review/traex-agent-adapter.js";
 import { extractMarkdownH1 } from "../shared/markdown-document.js";
@@ -93,12 +99,17 @@ type ReviewLifecycleState =
 
 type CommentDraft = {
   body: string;
+  kind: CommentKind;
 };
 
 type AgentResult = {
+  requestId?: string;
+  comments: QueuedComment[];
   sourceMarkdown: string;
   response: BatchRevisionResponse;
   diff: RenderedDiffEntry[];
+  hasMarkdownChanges: boolean;
+  hasRevisionIntent: boolean;
   runId: string;
   contextSnapshot: ContextSnapshot;
   revisionSource: "agent" | "manual";
@@ -187,6 +198,9 @@ export function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitStatus, setSubmitStatus] = useState<string | null>(null);
+  const [explanationDeliveryNotice, setExplanationDeliveryNotice] = useState<
+    string | null
+  >(null);
   const [reviewClosed, setReviewClosed] = useState(false);
   const [agentPresence, setAgentPresence] = useState<AgentPresenceState | null>(null);
   const submitAbortRef = useRef<AbortController | null>(null);
@@ -283,6 +297,16 @@ export function App() {
         (comment) => comment.artifactId === activeArtifact?.id,
       ),
     [activeArtifact?.id, queuedComments],
+  );
+  const commentCounts = useMemo(
+    () =>
+      commentsForArtifact.reduce(
+        (counts, comment) => {
+          counts[getCommentKind(comment)] += 1;
+          return counts;
+        },
+        { revision: 0, explanation: 0 } satisfies Record<CommentKind, number>),
+    [commentsForArtifact],
   );
 
   const navigationArtifacts = useMemo(
@@ -463,6 +487,7 @@ export function App() {
     setIsLoadingWorkflow(true);
     setWorkflowError(null);
     setSubmitError(null);
+    setExplanationDeliveryNotice(null);
     setAgentResult(null);
     setViewerMode("current");
 
@@ -506,6 +531,7 @@ export function App() {
       setSourceEditDraft(null);
       setExternalSessionDraft("");
       setGlobalInstruction("");
+      setExplanationDeliveryNotice(null);
       setAgentMode(bootstrap.currentAgentProvider ?? "codex");
       window.getSelection()?.removeAllRanges();
     } catch (error) {
@@ -536,6 +562,14 @@ export function App() {
     !isSourceEditing;
   const hasSubmitContent =
     commentsForArtifact.length > 0 || globalInstruction.trim().length > 0;
+  const submitButtonLabel =
+    commentCounts.explanation > 0 &&
+    commentCounts.revision === 0 &&
+    globalInstruction.trim().length === 0
+      ? "提交问题"
+      : commentCounts.explanation === 0
+        ? "提交修订"
+        : "提交全部";
   const canSubmit =
     hasSubmitContent &&
     !reviewClosed &&
@@ -571,6 +605,7 @@ export function App() {
   function startCommentDraft() {
     setCommentDraft({
       body: "",
+      kind: "revision",
     });
   }
 
@@ -592,6 +627,7 @@ export function App() {
       artifactId: active.id,
       anchor: pendingSelection.anchor,
       body: commentDraft.body.trim(),
+      kind: commentDraft.kind,
       status: "queued",
       createdAt: new Date().toISOString(),
     };
@@ -602,7 +638,7 @@ export function App() {
 
   function updateComment(
     commentId: string,
-    patch: Partial<Pick<QueuedComment, "body">>,
+    patch: Partial<Pick<QueuedComment, "body" | "kind">>,
   ) {
     setQueuedComments((current) =>
       current.map((comment) =>
@@ -640,6 +676,7 @@ export function App() {
     submitAbortRef.current = abortController;
     setIsSubmitting(true);
     setSubmitError(null);
+    setExplanationDeliveryNotice(null);
     setSubmitStatus(
       `正在排队提交到 ${executionTargetLabels[activeExecutionTarget]}，最长 90 秒。`,
     );
@@ -816,9 +853,12 @@ export function App() {
       }
 
       setAgentResult({
+        comments: [],
         sourceMarkdown,
         response,
         diff: createRenderedDiff(sourceMarkdown, response.revisedMarkdown),
+        hasMarkdownChanges: true,
+        hasRevisionIntent: true,
         runId: reviewRun.id,
         contextSnapshot: submission.contextSnapshot,
         revisionSource: "manual",
@@ -841,7 +881,23 @@ export function App() {
     pending: PendingAgentSubmission,
     response: BatchRevisionResponse,
   ) {
-    const shouldAcknowledge = !pending.requestId.startsWith("direct-");
+    const completedAt = new Date().toISOString();
+    const containsRevisionIntent = hasRevisionIntent(
+      pending.comments,
+      pending.request.globalInstruction,
+    );
+    const normalizedResponse = normalizeCommentResponse({
+      comments: pending.comments,
+      globalInstruction: pending.request.globalInstruction,
+      response,
+      sourceMarkdown: pending.sourceMarkdown,
+    });
+    const hasMarkdownChanges =
+      pending.sourceMarkdown !== normalizedResponse.revisedMarkdown;
+    // Completed results stay durable and recoverable until their changes are accepted.
+    // Explanation-only and no-change responses have no acceptance step.
+    const shouldAcknowledge =
+      !pending.requestId.startsWith("direct-") && !hasMarkdownChanges;
     if (appliedSubmissionIdsRef.current.has(pending.requestId)) {
       if (shouldAcknowledge) await acknowledgeRevisionSubmission(pending.requestId);
       setPendingSubmission((current) =>
@@ -851,16 +907,18 @@ export function App() {
       return;
     }
 
-    const completedAt = new Date().toISOString();
-    const reviewRun = createReviewRunRecord({
+    const proposedReviewRun = createReviewRunRecord({
       adapter: pending.executionProvider,
       artifactId: pending.artifactId,
       comments: pending.comments,
       contextSnapshot: pending.contextSnapshot,
       now: completedAt,
       sessionId: pending.request.session?.id ?? activeSession?.id ?? "session-main",
-      summary: response.summary,
+      summary: normalizedResponse.summary,
     });
+    const reviewRun: ReviewRunRecord = hasMarkdownChanges
+      ? proposedReviewRun
+      : { ...proposedReviewRun, status: "completed" };
     let workflowRevisionTrace: WorkflowRevisionTraceResult | undefined;
 
     if (pending.workflow) {
@@ -872,23 +930,59 @@ export function App() {
         contextSnapshot: pending.contextSnapshot,
         globalInstruction: pending.request.globalInstruction,
         originalMarkdown: pending.sourceMarkdown,
-        response,
+        response: normalizedResponse,
         runKey: pending.workflow.runKey,
         submittedAt: pending.submittedAt,
       });
     }
 
     setActiveArtifactId(pending.artifactId);
-    setAgentResult({
-      sourceMarkdown: pending.sourceMarkdown,
-      response,
-      diff: createRenderedDiff(pending.sourceMarkdown, response.revisedMarkdown),
-      runId: reviewRun.id,
-      contextSnapshot: pending.contextSnapshot,
-      revisionSource: "agent",
-      workflowRevisionTrace,
-    });
+    const explanationCount = pending.comments.filter(
+      (comment) => getCommentKind(comment) === "explanation",
+    ).length;
+
+    setExplanationDeliveryNotice(
+      explanationCount > 0
+        ? `${explanationCount} 个问题已在原 Agent 对话中回答。`
+        : null,
+    );
+    setAgentResult(
+      containsRevisionIntent
+        ? {
+            requestId: pending.requestId.startsWith("direct-") ? undefined : pending.requestId,
+            comments: pending.comments,
+            sourceMarkdown: pending.sourceMarkdown,
+            response: normalizedResponse,
+            diff: createRenderedDiff(
+              pending.sourceMarkdown,
+              normalizedResponse.revisedMarkdown,
+            ),
+            hasMarkdownChanges,
+            hasRevisionIntent: containsRevisionIntent,
+            runId: reviewRun.id,
+            contextSnapshot: pending.contextSnapshot,
+            revisionSource: "agent",
+            workflowRevisionTrace,
+          }
+        : null,
+    );
     setReviewRuns((current) => [...current, reviewRun]);
+    const completedCommentIds = new Set(
+      pending.comments
+        .filter(
+          (comment) =>
+            !hasMarkdownChanges || getCommentKind(comment) === "explanation",
+        )
+        .map((comment) => comment.id),
+    );
+    setQueuedComments((current) => {
+      const remaining = current.filter((comment) => !completedCommentIds.has(comment.id));
+      // A refreshed page starts with an empty queue; restore only revisions still awaiting acceptance.
+      const existingIds = new Set(remaining.map((comment) => comment.id));
+      return [...remaining, ...pending.comments.filter(
+        (comment) => !completedCommentIds.has(comment.id) && !existingIds.has(comment.id),
+      )];
+    });
     appliedSubmissionIdsRef.current.add(pending.requestId);
     if (shouldAcknowledge) await acknowledgeRevisionSubmission(pending.requestId);
     setPendingSubmission((current) =>
@@ -897,7 +991,7 @@ export function App() {
     setPendingSubmissionStatus(null);
     setSubmitError(null);
     setSubmitStatus(null);
-    setViewerMode("revised");
+    setViewerMode(hasMarkdownChanges ? "revised" : "current");
   }
 
   async function acceptRevised() {
@@ -931,6 +1025,19 @@ export function App() {
         return;
       }
     }
+
+    if (agentResult.requestId) {
+      try {
+        await acknowledgeRevisionSubmission(agentResult.requestId, true);
+      } catch (error) {
+        // Keep the result available for retry. Workflow source writeback is idempotent.
+        setSubmitError(
+          `修订已写回，但确认结果失败，请重试接受：${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
+    }
+    setSubmitError(null);
 
     setArtifacts((current) =>
       current.map((artifact) =>
@@ -1000,11 +1107,13 @@ export function App() {
     setAgentMode(bootstrap.currentAgentProvider ?? "codex");
     setSubmitError(null);
     setSubmitStatus(null);
+    setExplanationDeliveryNotice(null);
     window.getSelection()?.removeAllRanges();
   }
 
   function changeAgentMode(nextMode: AgentMode) {
     setAgentMode(nextMode);
+    setExplanationDeliveryNotice(null);
     setAgentResult(null);
     setSourceEditDraft(null);
     setViewerMode("current");
@@ -1046,6 +1155,7 @@ export function App() {
       }),
     );
     setExternalSessionDraft("");
+    setExplanationDeliveryNotice(null);
     setAgentResult(null);
     setSourceEditDraft(null);
     setViewerMode("current");
@@ -1062,6 +1172,7 @@ export function App() {
     setArtifactSessionLinks(linked.links);
     setReviewSessions(linked.sessions);
     setExternalSessionDraft("");
+    setExplanationDeliveryNotice(null);
     setAgentResult(null);
     setSourceEditDraft(null);
     setViewerMode("current");
@@ -1072,6 +1183,7 @@ export function App() {
     setPendingSelection(null);
     setCommentDraft(null);
     setExpandedCommentId(null);
+    setExplanationDeliveryNotice(null);
     setAgentResult(null);
     setSourceEditDraft(null);
     setViewerMode("current");
@@ -1290,7 +1402,9 @@ export function App() {
           <div className="panel-header">
             <div>
               <h2>评论队列</h2>
-              <p>{commentsForArtifact.length} 条待处理 · 当前文档 · 队列可滚动</p>
+              <p>
+                {commentCounts.revision} 条修订 · {commentCounts.explanation} 条解释
+              </p>
             </div>
             <button
               className="icon-only"
@@ -1332,8 +1446,15 @@ export function App() {
                     tabIndex={0}
                   >
                     <div className="comment-item-header">
-                      <div className="comment-item-actions">
+                      <div className="comment-item-meta">
+                        <span
+                          className={`comment-kind-badge comment-kind-${getCommentKind(comment)}`}
+                        >
+                          {getCommentKind(comment) === "revision" ? "修订" : "解释"}
+                        </span>
                         <small>{comment.anchor.blockId}</small>
+                      </div>
+                      <div className="comment-item-actions">
                         <button
                           className="icon-only"
                           onClick={(event) => {
@@ -1366,6 +1487,10 @@ export function App() {
                         onClick={(event) => event.stopPropagation()}
                         onKeyDown={(event) => event.stopPropagation()}
                       >
+                        <CommentKindControl
+                          kind={getCommentKind(comment)}
+                          onChange={(kind) => updateComment(comment.id, { kind })}
+                        />
                         <textarea
                           aria-label="评论正文"
                           onChange={(event) =>
@@ -1385,11 +1510,11 @@ export function App() {
         <section className="global-comment-panel">
           <div className="panel-header">
             <div>
-              <h2>全文评论（可选）</h2>
-              <p>评论队列或全文评论有内容即可提交</p>
+              <h2>全文修订要求（可选）</h2>
+              <p>这里的内容始终会作为文档修改要求</p>
             </div>
             <button
-              aria-label="清空全文评论"
+              aria-label="清空全文修订要求"
               className="text-button clear-global-comment"
               disabled={globalInstruction.length === 0 || isSubmitting}
               onClick={() => setGlobalInstruction("")}
@@ -1401,7 +1526,7 @@ export function App() {
           </div>
 
           <textarea
-            aria-label="全文评论"
+            aria-label="全文修订要求"
             className="global-instruction"
             disabled={!isActiveArtifactReviewable || isSubmitting}
             onChange={(event) => setGlobalInstruction(event.target.value)}
@@ -1420,7 +1545,7 @@ export function App() {
               <span>
                 {isSubmitting
                   ? `${executionTargetLabels[activeExecutionTarget]} 运行中`
-                  : "提交全部"}
+                  : submitButtonLabel}
               </span>
             </button>
 
@@ -1436,6 +1561,11 @@ export function App() {
           </div>
 
           {submitStatus ? <p className="info-message">{submitStatus}</p> : null}
+          {explanationDeliveryNotice ? (
+            <p className="conversation-reply-notice" role="status">
+              {explanationDeliveryNotice}
+            </p>
+          ) : null}
           {submitError ? <p className="error-message">{submitError}</p> : null}
         </section>
 
@@ -1665,11 +1795,19 @@ export function App() {
                   <h3>
                     {agentResult.revisionSource === "manual"
                       ? "手动修订"
-                      : "本次返回"}
+                        : "本次返回"}
                   </h3>
-                  <p>已生成修订，当前文档已切到“修订”视图。</p>
+                  <p>
+                    {agentResult.hasMarkdownChanges
+                      ? "已生成修订，当前文档已切到“修订”视图。"
+                      : "Agent 已处理评论，但没有修改文档。"}
+                  </p>
                 </div>
-                <span className="status-chip">待接受</span>
+                <span className="status-chip">
+                  {agentResult.hasMarkdownChanges
+                    ? "待接受"
+                    : "无需接受"}
+                </span>
               </div>
 
               <section className="result-section">
@@ -1680,17 +1818,28 @@ export function App() {
               </section>
 
               <section className="result-section">
-                <h4>已处理评论</h4>
-                  {agentResult.response.addressedComments.length > 0 ? (
+                <h4>
+                  修订处理结果
+                </h4>
+                  {getRevisionAddressedComments(agentResult).length > 0 ? (
                     <ol className="addressed-comment-list">
-                    {agentResult.response.addressedComments.map((item) => {
-                      const sourceComment = commentsForArtifact.find(
+                    {getRevisionAddressedComments(agentResult).map((item) => {
+                      const sourceComment = agentResult.comments.find(
                         (comment) => comment.id === item.commentId,
                       );
 
                       return (
                         <li key={item.commentId}>
-                          <span className="comment-id">{item.commentId}</span>
+                          <div className="result-comment-meta">
+                            {sourceComment ? (
+                              <span
+                                className={`comment-kind-badge comment-kind-${getCommentKind(sourceComment)}`}
+                              >
+                                修订
+                              </span>
+                            ) : null}
+                            <span className="comment-id">{item.commentId}</span>
+                          </div>
                           {sourceComment ? (
                             <blockquote>{sourceComment.anchor.quote}</blockquote>
                           ) : null}
@@ -1700,30 +1849,34 @@ export function App() {
                     })}
                   </ol>
                   ) : (
-                  <p className="result-empty">暂无逐条处理说明。</p>
+                  <p className="result-empty">暂无逐条修订说明。</p>
                 )}
               </section>
 
-              <section className="result-section">
-                <h4>修订信息</h4>
-                <div className="result-meta-grid">
-                  <div>
-                    <span>修订规模</span>
-                    <strong>
-                      {agentResult.sourceMarkdown.split("\n").length} 行到{" "}
-                      {agentResult.response.revisedMarkdown.split("\n").length} 行
-                    </strong>
+              {agentResult.hasMarkdownChanges ? (
+                <section className="result-section">
+                  <h4>修订信息</h4>
+                  <div className="result-meta-grid">
+                    <div>
+                      <span>修订规模</span>
+                      <strong>
+                        {agentResult.sourceMarkdown.split("\n").length} 行到{" "}
+                        {agentResult.response.revisedMarkdown.split("\n").length} 行
+                      </strong>
+                    </div>
+                    <div>
+                      <span>会话快照</span>
+                      <strong>{agentResult.contextSnapshot.id}</strong>
+                    </div>
                   </div>
-                  <div>
-                    <span>会话快照</span>
-                    <strong>{agentResult.contextSnapshot.id}</strong>
-                  </div>
-                </div>
-              </section>
+                </section>
+              ) : null}
 
               {agentResult.workflowRevisionTrace ? (
                 <section className="result-section">
-                  <h4>写回文件</h4>
+                  <h4>
+                    {agentResult.hasMarkdownChanges ? "写回文件" : "处理记录"}
+                  </h4>
                   <div className="path-list">
                     <code>
                       {agentResult.workflowRevisionTrace.latestRevisionRequestPath}
@@ -1744,23 +1897,35 @@ export function App() {
                 </section>
               ) : null}
 
-              <div className="result-actions">
-                <button
-                  className="text-button"
-                  onClick={() => setViewerMode("diff")}
-                  type="button"
-                >
-                  查看差异
-                </button>
-                <button
-                  className="icon-button primary"
-                  onClick={acceptRevised}
-                  type="button"
-                >
-                  <Check size={16} aria-hidden="true" />
-                  <span>接受修订</span>
-                </button>
-              </div>
+              {agentResult.hasMarkdownChanges ? (
+                <div className="result-actions">
+                  <button
+                    className="text-button"
+                    onClick={() => setViewerMode("diff")}
+                    type="button"
+                  >
+                    查看差异
+                  </button>
+                  <button
+                    className="icon-button primary"
+                    onClick={acceptRevised}
+                    type="button"
+                  >
+                    <Check size={16} aria-hidden="true" />
+                    <span>接受修订</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="result-actions">
+                  <button
+                    className="text-button"
+                    onClick={() => setAgentResult(null)}
+                    type="button"
+                  >
+                    完成本轮
+                  </button>
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -2048,6 +2213,34 @@ type SelectionPopoverProps = {
   onDraftChange: (draft: CommentDraft) => void;
 };
 
+type CommentKindControlProps = {
+  kind: CommentKind;
+  onChange: (kind: CommentKind) => void;
+};
+
+function CommentKindControl({ kind, onChange }: CommentKindControlProps) {
+  return (
+    <div aria-label="评论类型" className="comment-kind-control" role="group">
+      <button
+        aria-pressed={kind === "revision"}
+        className={kind === "revision" ? "active" : undefined}
+        onClick={() => onChange("revision")}
+        type="button"
+      >
+        修订
+      </button>
+      <button
+        aria-pressed={kind === "explanation"}
+        className={kind === "explanation" ? "active" : undefined}
+        onClick={() => onChange("explanation")}
+        type="button"
+      >
+        解释
+      </button>
+    </div>
+  );
+}
+
 function SelectionPopover({
   pendingSelection,
   draft,
@@ -2079,12 +2272,23 @@ function SelectionPopover({
       style={style}
     >
       <blockquote>{pendingSelection.anchor.quote}</blockquote>
+      <CommentKindControl
+        kind={draft.kind}
+        onChange={(kind) => onDraftChange({ ...draft, kind })}
+      />
+      <p className="comment-kind-help">
+        {draft.kind === "revision"
+          ? "Agent 会根据评论修改原文。"
+          : "Agent 会在原对话回答，不修改原文。"}
+      </p>
       <textarea
         autoFocus
         onChange={(event) =>
           onDraftChange({ ...draft, body: event.target.value })
         }
-        placeholder="输入评论"
+        placeholder={
+          draft.kind === "revision" ? "说明希望如何修改" : "你想了解什么？"
+        }
         value={draft.body}
       />
       <div className="popover-actions">
@@ -2093,7 +2297,7 @@ function SelectionPopover({
         </button>
         <button className="icon-button primary" disabled={!draft.body.trim()} type="submit">
           <Check size={16} aria-hidden="true" />
-          <span>添加</span>
+          <span>{draft.kind === "revision" ? "添加修订" : "添加解释"}</span>
         </button>
       </div>
     </form>
@@ -2131,6 +2335,10 @@ function formatRunStatus(status: ReviewRunRecord["status"]): string {
 
   if (status === "rejected") {
     return "已拒绝";
+  }
+
+  if (status === "completed") {
+    return "已处理";
   }
 
   return "待确认";
@@ -2180,13 +2388,13 @@ function getReviewLifecycleCopy(state: ReviewLifecycleState): {
   if (state === "working") {
     return {
       label: "处理中",
-      nextAction: "Agent 已领取，正在处理；完成后修订会自动回到页面。",
+      nextAction: "Agent 已领取，正在处理；完成后处理结果会自动回到页面。",
     };
   }
   if (state === "completed") {
     return {
-      label: "待接受",
-      nextAction: "修订已返回，等待接受；也可以继续查看差异。",
+      label: "已返回",
+      nextAction: "处理结果已返回；有修订时可以查看差异并接受。",
     };
   }
   if (state === "review_closed") {
@@ -2303,6 +2511,16 @@ function providerForExecutionTarget(target: AgentExecutionTarget): AgentProvider
   return "codex";
 }
 
+function getRevisionAddressedComments(result: AgentResult) {
+  return result.response.addressedComments.filter((item) => {
+    const sourceComment = result.comments.find(
+      (comment) => comment.id === item.commentId,
+    );
+
+    return !sourceComment || getCommentKind(sourceComment) === "revision";
+  });
+}
+
 type ExecutionVisibility = {
   body: string;
   tone: "attached" | "ephemeral";
@@ -2375,10 +2593,14 @@ async function fetchLatestUnacknowledgedSubmission(
   return body.submissions?.[0];
 }
 
-async function acknowledgeRevisionSubmission(requestId: string): Promise<void> {
+async function acknowledgeRevisionSubmission(requestId: string, accepted = false): Promise<void> {
   const response = await fetch(
     `/api/agent/submissions/${encodeURIComponent(requestId)}/acknowledge`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accepted }),
+    },
   );
   if (!response.ok) throw new Error(await readHttpError(response));
 }

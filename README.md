@@ -20,7 +20,7 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 - 多 Agent 入口：支持 Codex Desktop 原对话、Codex CLI 会话、TraeX CLI 会话。
 - 会话上下文：每个文档至少关联一个 review session，submit payload 会携带任务目标、当前阶段、上下文摘要、关联会话和已接受历史。
 - 修订结果视图：展示摘要、逐条处理结果、修订 Markdown、渲染态 diff，并支持 `接受` 把修订设为当前版本。
-- 页面恢复：刷新或重新打开页面时恢复最近一条未确认 submission；结果应用成功后写入 acknowledge，避免 completed response 重复回放。
+- 页面恢复：刷新或重新打开页面时恢复最近一条未确认 submission；纯解释或无改动结果展示后写入 acknowledge；有改动的结果保留到接受写回成功，刷新后仍可查看差异和接受，接受后不再重复回放。
 - 文件与文件夹入口：CLI 显式传入 `--review-file <file>`、`--review-folder <folder>` 或 `--demo`；文件夹模式递归列出 Markdown，并在左侧显示文件树。
 - 本地图片：Markdown 的相对图片路径会从当前文档所在目录解析，并通过 Dorey 的受限图片端点加载。
 - Mermaid / PlantUML 渲染：Markdown 中的 `mermaid` 和 `plantuml` fenced code block 会在编辑器里渲染为 inline SVG，并保留源码展开与错误回退能力。
@@ -30,13 +30,25 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 Dorey 通过 GitHub Release 提供可直接安装的 npm tarball。需要本机已经安装 Node.js 22 和 npm：
 
 ```bash
-curl -L -o dorey-0.2.0.tgz \
-  https://github.com/hopeloop/dorey/releases/download/v0.2.0/dorey-0.2.0.tgz
-npm install -g ./dorey-0.2.0.tgz
+curl -L -o dorey-0.2.2.tgz \
+  https://github.com/hopeloop/dorey/releases/download/v0.2.2/dorey-0.2.2.tgz
+npm install -g ./dorey-0.2.2.tgz
 dorey --help
 ```
 
-安装包和版本说明也可以从 [GitHub Releases](https://github.com/hopeloop/dorey/releases) 查看。
+安装包和版本说明也可以从 [GitHub Releases](https://github.com/hopeloop/dorey/releases) 查看。v0.2.1 仅发布了源码，没有 npm tarball 附件。
+
+从当前检出的源码安装：
+
+```bash
+npm ci
+npm run build
+npm pack --pack-destination /tmp
+npm install -g /tmp/dorey-0.2.2.tgz
+dorey --help
+```
+
+v0.2.2 新增“修订 / 解释”评论分流；本版本同时修复待接受结果刷新恢复，兼容说明、验证结果和发布步骤见 [v0.2.2 发布说明](docs/releases/v0.2.2.md)。
 
 ## 启动
 
@@ -111,14 +123,14 @@ http://127.0.0.1:5173/
 1. 使用 `dorey --review-file <file>`、`dorey --review-folder <folder>` 或 `dorey --demo` 打开 Dorey Web UI。
 2. 在左侧文件树选择一个 Markdown 文档。
 3. 在渲染后的文档中选中文本。
-4. 点击 `添加评论`。
-5. 输入评论内容，点击 `添加`。
-6. 多条评论会进入右侧评论队列。
-7. 点击 `提交全部`。
+4. 点击 `评论`，选择 `修订`（默认）或 `解释`。
+5. 输入评论内容，点击 `添加修订` 或 `添加解释`。
+6. 多条评论会进入右侧评论队列，并显示对应类型。
+7. 点击 `提交修订`、`提交问题` 或混合场景下的 `提交全部`。
 8. Dorey 会把完整 payload 写到 `.local/dorey-submissions/<review>/active/.../payload.json`，并把本次请求排队给原 Agent 会话。
-9. 原会话里的 `dorey poll` 收到 payload 后，根据评论修订 Markdown，并把 `BatchRevisionResponse` POST 回页面给出的 reply endpoint。
-10. 页面展示 `本次返回`、`已处理评论`、`修订信息`、`差异`。
-11. 点击 `接受修订` 后，Dorey 先校验并原子写回原文件；成功后当前文档更新、评论队列清空，run history 记录为 accepted。若检测到原文件已被外部修改，则保持待接受状态并提示冲突。
+9. 原会话里的 `dorey poll` 收到 payload 后，先在原 Agent 对话中直接回答解释型评论，再应用修订型评论，并把 `BatchRevisionResponse` POST 回页面给出的 reply endpoint。
+10. Dorey 不展示解释正文，只显示“已在原 Agent 对话中回答”的轻量回执；有文档修改时才展示修订、差异和接受按钮。
+11. 有修订时点击 `接受修订`，Dorey 会先校验并原子写回原文件；成功后当前文档更新、修订评论清空，run history 记录为 accepted。若检测到原文件已被外部修改，则保持待接受状态并提示冲突。
 
 如果只是想删掉一段话或改几个字，也可以在 Markdown 文档上点击 `编辑 Markdown`，修改源码后点击 `保存为修订`；页面会生成普通修订、展示 diff，并在 `接受修订` 后写入 review 结果。
 
@@ -233,6 +245,11 @@ runRoot/review/<artifactId>/
 
 ## Agent 返回格式
 
+`QueuedComment.kind` 支持两种值：
+
+- `revision`：要求修改 Markdown，也是字段缺失时的默认行为。
+- `explanation`：在原 Agent 对话中回答问题，不得因此修改 Markdown。纯解释请求返回的 `revisedMarkdown` 必须与原文完全一致。
+
 原 Agent 会话收到 payload 后，需要返回 `BatchRevisionResponse`：
 
 ```json
@@ -252,7 +269,7 @@ runRoot/review/<artifactId>/
 
 - `revisedMarkdown`：完整修订后的 Markdown 文本。
 - `summary`：本次修改摘要。
-- `addressedComments`：逐条说明每个评论如何处理。
+- `addressedComments`：逐条记录每个评论如何处理，供完成状态和 review trace 使用。解释正文由原 Agent 对话承载，Dorey 页面不重复展示。
 
 ## 项目结构
 

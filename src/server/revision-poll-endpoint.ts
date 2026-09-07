@@ -307,7 +307,12 @@ export async function handleRevisionSubmissionRequest(
 
   if (req.method === "POST" && parsedPath.action === "acknowledge") {
     try {
-      const acknowledged = await broker.acknowledge(parsedPath.requestId);
+      const body = req.body?.trim() ? JSON.parse(req.body) : {};
+      if (!body || typeof body !== "object" || Array.isArray(body) ||
+          (body.accepted !== undefined && typeof body.accepted !== "boolean")) {
+        return { status: 400, body: { error: "Revision acknowledgement body is invalid." } };
+      }
+      const acknowledged = await broker.acknowledge(parsedPath.requestId, { accepted: body.accepted === true });
       return { status: 200, body: { ...acknowledged, status: "acknowledged" } };
     } catch (error) {
       return {
