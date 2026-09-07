@@ -27,7 +27,7 @@ Dorey 是 **Doc Review** 的缩写：一个面向 AI 编码产物的本地文档
 
 ## 安装
 
-Dorey 通过 GitHub Release 提供可直接安装的 npm tarball。需要本机已经安装 Node.js 22 和 npm。以下命令适用于 v0.2.2 Release 及其安装包发布后；发布准备阶段请使用下方的源码安装方式：
+Dorey 通过 GitHub Release 提供可直接安装的 npm tarball。需要本机已经安装 Node.js 22 和 npm：
 
 ```bash
 curl -L -o dorey-0.2.2.tgz \
@@ -38,7 +38,7 @@ dorey --help
 
 安装包和版本说明也可以从 [GitHub Releases](https://github.com/hopeloop/dorey/releases) 查看。v0.2.1 仅发布了源码，没有 npm tarball 附件。
 
-从当前检出的源码安装发布候选版本：
+从当前检出的源码安装：
 
 ```bash
 npm ci
