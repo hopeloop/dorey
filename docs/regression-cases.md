@@ -54,3 +54,15 @@
 6. 点击“结束评审”，确认 foreground poll 返回 `review_closed` 并退出。
 
 人工 smoke 只验证真实 CLI、浏览器和 Agent turn 的连通性；它不能替代上述自动化门禁。
+
+## v0.2.2：修订 / 解释评论分流
+
+| Case ID | 场景 | 通过标准 | 验证位置 |
+| --- | --- | --- | --- |
+| DOR-TYPE-001 | 旧评论兼容及默认类型 | 缺少 kind 按修订处理，评论面板默认选择修订 | `tests/comment-kind.test.ts`、浏览器解释用例 |
+| DOR-TYPE-002 | 纯解释与错误改写隔离 | payload 为 explanation；显示回答回执，保留原文，无解释正文、差异或接受按钮；已处理评论清空 | `tests/comment-kind.test.ts`、`tests/browser/review-lifecycle.spec.ts` |
+| DOR-TYPE-003 | 修订意图 | revision 评论或非空全文修订要求允许返回文档修改 | `tests/comment-kind.test.ts`、浏览器修订主链路 |
+| DOR-TYPE-004 | Agent 提示和投递 | Codex / TraeX 提示要求原对话回答解释，再处理修订；poll 输出类型约束 | `tests/codex-agent-adapter.test.ts`、`tests/traex-agent-adapter.test.ts`、`tests/revision-agent-poll-cli.test.ts` |
+| DOR-TYPE-005 | 混合评论与切换类型 | 编辑时切换修订 / 解释；统计与提交标签同步变化；混合 payload 保留两种 kind；回复后解释仅回执，修订可接受并写回 | `tests/browser/review-lifecycle.spec.ts`，补充真实 CLI + 浏览器 smoke |
+
+发布候选 smoke 在临时 Markdown 上依次执行纯解释、混合提交。由当前 Agent 的真实 foreground CLI 领取并向 reply endpoint 回复；解释先在原对话回答。纯解释检查原文件未变；混合提交检查刷新恢复、差异及接受写回，最后结束评审并确认 poll 退出。端口、临时目录与测试产物保持隔离，不提交 `log/`。
